@@ -2,17 +2,24 @@
 Unit tests for attribution_math.py.
 
 These tests run entirely in Python — no ClickHouse required.
-They verify that the reference implementation of each attribution
-model produces mathematically correct results on synthetic data.
+They verify that the reference implementation produces mathematically
+correct results on synthetic data drawn from fixtures.py.
+
+SourceCode values used in assertions (see fixtures.py for full mapping):
+  "3_1"   Yandex Direct (trafic_source_id=3, adv_engine_id=1)
+  "2_621" Yandex organic (trafic_source_id=2, search_engine_id=621)
+  "6"     direct / typed URL (trafic_source_id=6)
+  "7"     email (trafic_source_id=7)
+  "8_1"   VK social (trafic_source_id=8, social_source_network_id=1)
 """
 
 import math
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-# Allow imports from the tests package without installing it
 sys.path.insert(0, str(Path(__file__).parent))
 
 from attribution_math import (
@@ -21,7 +28,7 @@ from attribution_math import (
     compute_last_touch,
     compute_linear,
     compute_time_decay,
-    derive_channel,
+    derive_source_code,
 )
 from fixtures import (
     GOAL_ID,
@@ -36,50 +43,50 @@ from fixtures import (
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# derive_source_code
 # ---------------------------------------------------------------------------
 
-def approx(value: float, expected: float, tol: float = 1e-9) -> bool:
-    return abs(value - expected) <= tol
+class TestDeriveSourceCode:
+    def test_organic_search_appends_engine_id(self):
+        assert derive_source_code(2, search_engine_id=621) == "2_621"
+        assert derive_source_code(2, search_engine_id=1) == "2_1"
 
+    def test_advertising_appends_adv_engine_id(self):
+        assert derive_source_code(3, adv_engine_id=1) == "3_1"   # Yandex Direct
+        assert derive_source_code(3, adv_engine_id=2) == "3_2"   # Google Ads
 
-# ---------------------------------------------------------------------------
-# derive_channel
-# ---------------------------------------------------------------------------
-
-class TestDeriveChannel:
-    def test_utm_source_and_medium(self):
-        assert derive_channel(utm_source="google", utm_medium="cpc") == "google / cpc"
-
-    def test_utm_source_only(self):
-        assert derive_channel(utm_source="yandex") == "yandex / organic"
-
-    def test_paid_traffic_source_no_utm(self):
-        assert derive_channel(traffic_source="ad") == "paid / cpc"
-        assert derive_channel(traffic_source="banner") == "paid / cpc"
-
-    def test_organic_traffic_source(self):
-        assert derive_channel(traffic_source="organic") == "organic / organic"
-
-    def test_social_with_domain(self):
-        assert derive_channel(traffic_source="social", referer_domain="vk.com") == "vk.com / social"
-
-    def test_referral(self):
-        assert derive_channel(referer_domain="example.com") == "example.com / referral"
-
-    def test_direct(self):
-        assert derive_channel() == "direct / none"
-
-    def test_utm_takes_priority_over_traffic_source(self):
-        result = derive_channel(
-            utm_source="yandex",
-            utm_medium="cpc",
-            traffic_source="ad",
+    def test_advertising_with_banner_appends_click_target_type(self):
+        result = derive_source_code(
+            3, adv_engine_id=1, click_banner_id=12345, click_target_type=11
         )
-        assert result == "yandex / cpc"
+        assert result == "3_1_11"
 
-    def test_null_referer_domain_treated_as_direct(self):
-        assert derive_channel(referer_domain="null") == "direct / none"
+    def test_advertising_with_banner_requires_nonzero_banner_id(self):
+        # click_banner_id=0 → no banner suffix
+        assert derive_source_code(3, adv_engine_id=1, click_banner_id=0) == "3_1"
+
+    def test_social_appends_network_id(self):
+        assert derive_source_code(8, social_source_network_id=1) == "8_1"   # VK
+        assert derive_source_code(8, social_source_network_id=2) == "8_2"   # Facebook
+
+    def test_recommendation_appends_system_id(self):
+        assert derive_source_code(9, recommendation_system_id=3) == "9_3"
+
+    def test_messenger_appends_messenger_id(self):
+        assert derive_source_code(10, messenger_id=2) == "10_2"
+
+    def test_direct_no_suffix(self):
+        assert derive_source_code(6) == "6"
+
+    def test_email_no_suffix(self):
+        assert derive_source_code(7) == "7"
+
+    def test_internal_no_suffix(self):
+        assert derive_source_code(4) == "4"
+
+    def test_unknown_no_suffix(self):
+        assert derive_source_code(0) == "0"
+        assert derive_source_code(-1) == "-1"
 
 
 # ---------------------------------------------------------------------------
@@ -92,10 +99,12 @@ class TestBuildChains:
         chains = build_chains(visits, goal_id=GOAL_ID)
         assert len(chains) == 1
         assert len(chains[0]) == 1
-        assert chains[0][0]["position"] == 1
-        assert chains[0][0]["chain_length"] == 1
-        assert chains[0][0]["is_converting"] == 1
-        assert chains[0][0]["days_before_conv"] == pytest.approx(0.0)
+        tp = chains[0][0]
+        assert tp["position"] == 1
+        assert tp["chain_length"] == 1
+        assert tp["is_converting"] == 1
+        assert tp["days_before_conv"] == pytest.approx(0.0)
+        assert tp["source_code"] == "3_1"
 
     def test_two_touchpoints_order(self):
         visits = two_touch_visits()
@@ -103,15 +112,19 @@ class TestBuildChains:
         assert len(chains) == 1
         chain = chains[0]
         assert len(chain) == 2
-        # Oldest touchpoint first
         assert chain[0]["position"] == 1
         assert chain[1]["position"] == 2
         assert chain[0]["days_before_conv"] == pytest.approx(5.0)
         assert chain[1]["days_before_conv"] == pytest.approx(0.0)
 
+    def test_two_touchpoints_source_codes(self):
+        chains = build_chains(two_touch_visits(), GOAL_ID)
+        chain = chains[0]
+        assert chain[0]["source_code"] == "2_621"   # Yandex organic
+        assert chain[1]["source_code"] == "6"        # direct
+
     def test_is_converting_flag(self):
-        visits = two_touch_visits()
-        chains = build_chains(visits, goal_id=GOAL_ID)
+        chains = build_chains(two_touch_visits(), GOAL_ID)
         chain = chains[0]
         assert chain[0]["is_converting"] == 0
         assert chain[1]["is_converting"] == 1
@@ -124,38 +137,42 @@ class TestBuildChains:
         assert len(chain) == 3
         assert all(tp["chain_length"] == 3 for tp in chain)
 
+    def test_three_touchpoints_source_codes(self):
+        chains = build_chains(three_touch_visits(), GOAL_ID)
+        chain = chains[0]
+        assert chain[0]["source_code"] == "2_621"   # Yandex organic
+        assert chain[1]["source_code"] == "3_1"      # Yandex Direct
+        assert chain[2]["source_code"] == "6"         # direct
+
     def test_no_goals_no_chains(self):
-        from datetime import datetime
         visits = [
-            {"client_id": 99, "visit_id": 1, "counter_id": 1,
-             "start_time": datetime(2024, 1, 1), "goals_id": []},
+            {"user_id": 99, "visit_id": 1, "counter_id": 1,
+             "utc_start_time": datetime(2024, 1, 1), "goals_id": [],
+             "trafic_source_id": 6},
         ]
         chains = build_chains(visits, goal_id=GOAL_ID)
         assert chains == []
 
-    def test_different_goal_not_converting(self):
+    def test_different_goal_id_no_chains(self):
         visits = single_touch_visits()
         chains = build_chains(visits, goal_id=9999)
         assert chains == []
 
-    def test_lookback_window_excludes_old_visits(self):
+    def test_lookback_window_excludes_old_visit(self):
         visits = lookback_window_visits(lookback_days=90)
         chains = build_chains(visits, goal_id=GOAL_ID, lookback_days=90)
         assert len(chains) == 1
         chain = chains[0]
-        channels = [tp["channel"] for tp in chain]
-        # The 100-day-old CPC visit must NOT appear
-        assert "old_campaign / cpc" not in channels
-        assert len(chain) == 2   # only the organic + converting visit
+        source_codes = [tp["source_code"] for tp in chain]
+        assert "3_2" not in source_codes   # 100-day-old Google Ads visit excluded
+        assert len(chain) == 2             # only Yandex organic + direct
 
     def test_repeat_converter_produces_two_chains(self):
-        visits = repeat_converter_visits()
-        chains = build_chains(visits, goal_id=GOAL_ID)
+        chains = build_chains(repeat_converter_visits(), goal_id=GOAL_ID)
         assert len(chains) == 2
 
     def test_multi_client_produces_three_chains(self):
-        visits = multi_client_visits()
-        chains = build_chains(visits, goal_id=GOAL_ID)
+        chains = build_chains(multi_client_visits(), goal_id=GOAL_ID)
         assert len(chains) == 3
 
 
@@ -167,19 +184,16 @@ class TestFirstTouch:
     def test_single_touch_all_credit(self):
         chains = build_chains(single_touch_visits(), GOAL_ID)
         result = compute_first_touch(chains)
-        assert result == {"google / cpc": 1.0}
+        assert result == {"3_1": 1.0}
 
     def test_two_touch_first_gets_all(self):
         chains = build_chains(two_touch_visits(), GOAL_ID)
         result = compute_first_touch(chains)
-        # First touchpoint is organic; direct/none is NOT the first
-        assert "organic / organic" in result
-        assert result["organic / organic"] == pytest.approx(1.0)
-        assert result.get("direct / none", 0.0) == pytest.approx(0.0)
+        assert result.get("2_621", 0.0) == pytest.approx(1.0)   # Yandex organic is first
+        assert result.get("6", 0.0) == pytest.approx(0.0)
 
     def test_total_equals_number_of_chains(self):
-        visits = multi_client_visits()
-        chains = build_chains(visits, GOAL_ID)
+        chains = build_chains(multi_client_visits(), GOAL_ID)
         result = compute_first_touch(chains)
         assert sum(result.values()) == pytest.approx(len(chains))
 
@@ -195,18 +209,16 @@ class TestLastTouch:
     def test_single_touch_all_credit(self):
         chains = build_chains(single_touch_visits(), GOAL_ID)
         result = compute_last_touch(chains)
-        assert result == {"google / cpc": 1.0}
+        assert result == {"3_1": 1.0}
 
     def test_two_touch_last_gets_all(self):
         chains = build_chains(two_touch_visits(), GOAL_ID)
         result = compute_last_touch(chains)
-        # Last (converting) visit has no UTM/referer → direct / none
-        assert result.get("direct / none", 0.0) == pytest.approx(1.0)
-        assert result.get("organic / organic", 0.0) == pytest.approx(0.0)
+        assert result.get("6", 0.0) == pytest.approx(1.0)        # direct is last
+        assert result.get("2_621", 0.0) == pytest.approx(0.0)
 
     def test_total_equals_number_of_chains(self):
-        visits = multi_client_visits()
-        chains = build_chains(visits, GOAL_ID)
+        chains = build_chains(multi_client_visits(), GOAL_ID)
         result = compute_last_touch(chains)
         assert sum(result.values()) == pytest.approx(len(chains))
 
@@ -223,7 +235,7 @@ class TestLinear:
         chains = build_chains(single_touch_visits(), GOAL_ID)
         result = compute_linear(chains)
         assert sum(result.values()) == pytest.approx(1.0)
-        assert result["google / cpc"] == pytest.approx(1.0)
+        assert result["3_1"] == pytest.approx(1.0)
 
     def test_two_touch_equal_split(self):
         chains = build_chains(two_touch_visits(), GOAL_ID)
@@ -240,8 +252,7 @@ class TestLinear:
             assert credit == pytest.approx(1 / 3)
 
     def test_total_equals_number_of_chains(self):
-        visits = multi_client_visits()
-        chains = build_chains(visits, GOAL_ID)
+        chains = build_chains(multi_client_visits(), GOAL_ID)
         result = compute_linear(chains)
         assert sum(result.values()) == pytest.approx(len(chains))
 
@@ -260,51 +271,39 @@ class TestTimeDecay:
         assert sum(result.values()) == pytest.approx(1.0)
 
     def test_total_equals_number_of_chains(self):
-        visits = multi_client_visits()
-        chains = build_chains(visits, GOAL_ID)
+        chains = build_chains(multi_client_visits(), GOAL_ID)
         result = compute_time_decay(chains, half_life=7.0)
         assert sum(result.values()) == pytest.approx(len(chains))
 
-    def test_recent_touchpoint_higher_weight_than_older(self):
-        """
-        Chain: old_channel (7 days ago) → new_channel (0 days, converts).
-        With half_life=7d, the 7-day-old touchpoint has weight 0.5 and
-        the same-day touchpoint has weight 1.0, so new_channel > old_channel.
-        """
+    def test_recent_touchpoint_higher_weight(self):
+        """direct (0 days before conv) must outweigh Yandex organic (5 days)."""
         chains = build_chains(two_touch_visits(), GOAL_ID)
         result = compute_time_decay(chains, half_life=7.0)
-        assert sum(result.values()) == pytest.approx(1.0)
-        # direct/none (0 days) > organic/organic (5 days)
-        assert result.get("direct / none", 0.0) > result.get("organic / organic", 0.0)
+        assert result.get("6", 0.0) > result.get("2_621", 0.0)
 
     def test_weights_sum_to_one_per_chain(self):
-        """Verify that for each individual chain weights normalise to 1."""
         chains = build_chains(three_touch_visits(), GOAL_ID)
-        # Manually compute weights for the single chain
         chain = chains[0]
         half_life = 7.0
         raws = [math.pow(2.0, -tp["days_before_conv"] / half_life) for tp in chain]
         total = sum(raws)
-        normalised = [r / total for r in raws]
-        assert sum(normalised) == pytest.approx(1.0)
+        assert sum(r / total for r in raws) == pytest.approx(1.0)
 
-    def test_all_same_day_equal_weights(self):
-        """If all touchpoints happen on the same day, weights should be equal."""
-        from datetime import datetime
+    def test_all_same_time_approximately_equal_weights(self):
+        """Visits seconds apart → weights almost equal."""
         visits = [
-            {"client_id": 10, "visit_id": 101, "counter_id": 1,
-             "start_time": datetime(2024, 6, 1, 10, 0), "goals_id": [],
-             "utm_source": "a", "utm_medium": "cpc"},
-            {"client_id": 10, "visit_id": 102, "counter_id": 1,
-             "start_time": datetime(2024, 6, 1, 11, 0), "goals_id": [],
-             "utm_source": "b", "utm_medium": "cpc"},
-            {"client_id": 10, "visit_id": 103, "counter_id": 1,
-             "start_time": datetime(2024, 6, 1, 12, 0), "goals_id": [GOAL_ID],
-             "utm_source": "c", "utm_medium": "cpc"},
+            {"user_id": 10, "visit_id": 101, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 10, 0), "goals_id": [],
+             "trafic_source_id": 3, "adv_engine_id": 1},
+            {"user_id": 10, "visit_id": 102, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 11, 0), "goals_id": [],
+             "trafic_source_id": 2, "search_engine_id": 621},
+            {"user_id": 10, "visit_id": 103, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 12, 0), "goals_id": [GOAL_ID],
+             "trafic_source_id": 6},
         ]
         chains = build_chains(visits, goal_id=GOAL_ID)
         result = compute_time_decay(chains, half_life=7.0)
-        # Very short time gaps → weights approximately equal
         credits = list(result.values())
         assert max(credits) - min(credits) < 0.01
 
@@ -324,9 +323,6 @@ class TestTimeDecay:
 # ---------------------------------------------------------------------------
 
 class TestCrossModelInvariants:
-    """
-    Properties that must hold across ALL models for the same input.
-    """
 
     @pytest.mark.parametrize("model_fn", [
         compute_first_touch,
@@ -335,9 +331,7 @@ class TestCrossModelInvariants:
         lambda chains: compute_time_decay(chains, half_life=7.0),
     ])
     def test_total_conversions_equals_chain_count(self, model_fn):
-        """Sum of attributed conversions = number of converting chains."""
-        visits = multi_client_visits()
-        chains = build_chains(visits, GOAL_ID)
+        chains = build_chains(multi_client_visits(), GOAL_ID)
         result = model_fn(chains)
         assert sum(result.values()) == pytest.approx(len(chains), abs=1e-9)
 
@@ -347,32 +341,28 @@ class TestCrossModelInvariants:
         compute_linear,
         lambda chains: compute_time_decay(chains, half_life=7.0),
     ])
-    def test_single_channel_chain_gets_full_credit(self, model_fn):
-        """A one-touchpoint chain must attribute 1.0 to its channel."""
+    def test_single_channel_chain_full_credit(self, model_fn):
         chains = build_chains(single_touch_visits(), GOAL_ID)
         result = model_fn(chains)
         assert sum(result.values()) == pytest.approx(1.0)
 
     def test_first_and_last_differ_on_multi_touch(self):
-        """First-touch and last-touch should differ when channels differ."""
         chains = build_chains(two_touch_visits(), GOAL_ID)
         first = compute_first_touch(chains)
         last = compute_last_touch(chains)
-        # They must distribute credit differently
         assert first != last
 
-    def test_linear_between_first_and_last(self):
+    def test_linear_between_first_and_last_for_first_channel(self):
         """
-        For a 2-touchpoint chain where channels are different,
-        linear (0.5 each) must lie strictly between first-touch
-        and last-touch for the FIRST channel.
+        Chain: 2_621 (5d) → 6 (0d, converts).
+        For channel "2_621":
+          first-touch → 1.0, linear → 0.5, last-touch → 0.0
         """
         chains = build_chains(two_touch_visits(), GOAL_ID)
         first = compute_first_touch(chains)
         last = compute_last_touch(chains)
         linear = compute_linear(chains)
 
-        channel = "organic / organic"  # the first touchpoint's channel
-        assert linear[channel] == pytest.approx(0.5)
-        assert first[channel] > linear[channel]
-        assert last.get(channel, 0.0) < linear[channel]
+        assert linear["2_621"] == pytest.approx(0.5)
+        assert first["2_621"] > linear["2_621"]
+        assert last.get("2_621", 0.0) < linear["2_621"]
