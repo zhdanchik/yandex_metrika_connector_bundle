@@ -6,11 +6,28 @@ sql/03_attribution_models.sql.  It is used exclusively by the unit
 test suite so that correctness can be verified without a live
 ClickHouse instance.
 
+SourceCode convention matches analyse_channels_chain.py:
+  TraficSourceID values and their SourceCode formats:
+    -1 / 0   → "-1" / "0"          unknown / other referral
+    2        → "2_{SearchEngineID}" organic search
+                 e.g. "2_621" = Yandex, "2_1" = Google
+    3        → "3_{AdvEngineID}"    advertising
+               "3_1_N" with banner  Yandex Direct with banner
+                 e.g. "3_1" = Yandex Direct, "3_2" = Google Ads
+    4        → "4"                  internal link
+    5        → "5"                  bookmarks / saved
+    6        → "6"                  direct (typed URL)
+    7        → "7"                  email
+    8        → "8_{SocialNetworkID}" social
+                 e.g. "8_1" = VK, "8_2" = Facebook, "8_3" = OK
+    9        → "9_{RecSysID}"       recommendation system
+    10       → "10_{MessengerID}"   messenger
+
 Each public function accepts a list of *chains*, where a chain is
 a list of touchpoint dicts produced by ``build_chains()``:
 
     {
-        "channel":          str,    # normalised channel label
+        "source_code":      str,    # SourceCode label (e.g. "2_621")
         "position":         int,    # 1 = oldest, chain_length = converting
         "chain_length":     int,
         "days_before_conv": float,  # days between this visit and conversion
@@ -26,29 +43,39 @@ from typing import Dict, List
 
 
 # ---------------------------------------------------------------------------
-# Channel derivation  (mirrors the multiIf() in 02_build_chains.sql)
+# SourceCode derivation  (mirrors the multiIf in 02_build_chains.sql)
 # ---------------------------------------------------------------------------
 
-def derive_channel(
-    utm_source: str = "",
-    utm_medium: str = "",
-    traffic_source: str = "",
-    referer_domain: str = "",
+def derive_source_code(
+    trafic_source_id: int,
+    search_engine_id: int = 0,
+    adv_engine_id: int = 0,
+    social_source_network_id: int = 0,
+    recommendation_system_id: int = 0,
+    messenger_id: int = 0,
+    click_banner_id: int = 0,
+    click_target_type: int = 0,
 ) -> str:
-    """Return a normalised '{source} / {medium}' channel label."""
-    if utm_source and utm_medium:
-        return f"{utm_source} / {utm_medium}"
-    if utm_source:
-        return f"{utm_source} / organic"
-    if traffic_source in ("ad", "banner", "context", "paid"):
-        return "paid / cpc"
-    if traffic_source == "organic":
-        return "organic / organic"
-    if traffic_source == "social" and referer_domain:
-        return f"{referer_domain} / social"
-    if referer_domain and referer_domain != "null":
-        return f"{referer_domain} / referral"
-    return "direct / none"
+    """
+    Derive a SourceCode string from Yandex Metrika TraficSourceID fields.
+
+    Mirrors the multiIf() expression in 02_build_chains.sql which was
+    originally written in analyse_channels_chain.py.
+    """
+    code = str(trafic_source_id)
+    if trafic_source_id == 2:
+        return f"{code}_{search_engine_id}"
+    if trafic_source_id == 3 and adv_engine_id == 1 and click_banner_id != 0:
+        return f"{code}_{adv_engine_id}_{click_target_type}"
+    if trafic_source_id == 3:
+        return f"{code}_{adv_engine_id}"
+    if trafic_source_id == 8:
+        return f"{code}_{social_source_network_id}"
+    if trafic_source_id == 9:
+        return f"{code}_{recommendation_system_id}"
+    if trafic_source_id == 10:
+        return f"{code}_{messenger_id}"
+    return code
 
 
 # ---------------------------------------------------------------------------
@@ -64,16 +91,20 @@ def build_chains(
     Build conversion chains from a list of visit records.
 
     Each visit dict must contain:
-        client_id   : int
-        start_time  : datetime
-        goals_id    : list[int]  – goal IDs reached in this visit
-        utm_source  : str  (optional, defaults to '')
-        utm_medium  : str  (optional)
-        traffic_source: str (optional)
-        referer_domain: str (optional)
+        user_id           : int
+        utc_start_time    : datetime
+        goals_id          : list[int]   – goal IDs reached in this visit
+        trafic_source_id  : int         (default 0)
+        search_engine_id  : int         (default 0)
+        adv_engine_id     : int         (default 0)
+        social_source_network_id : int  (default 0)
+        recommendation_system_id : int  (default 0)
+        messenger_id      : int         (default 0)
+        click_banner_id   : int         (default 0)
+        click_target_type : int         (default 0)
 
     Returns a list of chains; each chain is a sorted list of
-    touchpoint dicts (oldest first).
+    touchpoint dicts (oldest first, i.e. position 1 first).
     """
     # Find all converting visits
     converting = [
@@ -84,36 +115,40 @@ def build_chains(
     chains: List[List[dict]] = []
 
     for conv in converting:
-        conv_time: datetime = conv["start_time"]
-        client_id: int = conv["client_id"]
+        conv_time: datetime = conv["utc_start_time"]
+        user_id: int = conv["user_id"]
         window_start = conv_time - timedelta(days=lookback_days)
 
         # Collect touchpoints within the lookback window
         touchpoints = [
             v for v in visits
-            if v["client_id"] == client_id
-            and window_start <= v["start_time"] <= conv_time
+            if v["user_id"] == user_id
+            and window_start <= v["utc_start_time"] <= conv_time
         ]
 
         if not touchpoints:
             continue
 
-        # Sort chronologically (oldest first)
-        touchpoints.sort(key=lambda v: v["start_time"])
+        # Sort chronologically (oldest first = position 1)
+        touchpoints.sort(key=lambda v: v["utc_start_time"])
         chain_length = len(touchpoints)
 
         chain: List[dict] = []
         for pos, tp in enumerate(touchpoints, start=1):
-            delta_seconds = (conv_time - tp["start_time"]).total_seconds()
+            delta_seconds = (conv_time - tp["utc_start_time"]).total_seconds()
             days_before = delta_seconds / 86400.0
-            channel = derive_channel(
-                utm_source=tp.get("utm_source", ""),
-                utm_medium=tp.get("utm_medium", ""),
-                traffic_source=tp.get("traffic_source", ""),
-                referer_domain=tp.get("referer_domain", ""),
+            source_code = derive_source_code(
+                trafic_source_id=tp.get("trafic_source_id", 0),
+                search_engine_id=tp.get("search_engine_id", 0),
+                adv_engine_id=tp.get("adv_engine_id", 0),
+                social_source_network_id=tp.get("social_source_network_id", 0),
+                recommendation_system_id=tp.get("recommendation_system_id", 0),
+                messenger_id=tp.get("messenger_id", 0),
+                click_banner_id=tp.get("click_banner_id", 0),
+                click_target_type=tp.get("click_target_type", 0),
             )
             chain.append({
-                "channel": channel,
+                "source_code": source_code,
                 "position": pos,
                 "chain_length": chain_length,
                 "days_before_conv": days_before,
@@ -129,20 +164,18 @@ def build_chains(
 # Attribution models
 # ---------------------------------------------------------------------------
 
-def _accumulate(result: Dict[str, float], channel: str, weight: float) -> None:
-    result[channel] = result.get(channel, 0.0) + weight
+def _accumulate(result: Dict[str, float], source_code: str, weight: float) -> None:
+    result[source_code] = result.get(source_code, 0.0) + weight
 
 
 def compute_first_touch(chains: List[List[dict]]) -> Dict[str, float]:
-    """
-    First-touch: 100% credit to position=1 (oldest) touchpoint.
-    """
+    """First-touch: 100% credit to position=1 (oldest) touchpoint."""
     result: Dict[str, float] = {}
     for chain in chains:
         if not chain:
             continue
         first = min(chain, key=lambda tp: tp["position"])
-        _accumulate(result, first["channel"], 1.0)
+        _accumulate(result, first["source_code"], 1.0)
     return result
 
 
@@ -156,18 +189,13 @@ def compute_last_touch(chains: List[List[dict]]) -> Dict[str, float]:
         if not chain:
             continue
         converting = [tp for tp in chain if tp.get("is_converting") == 1]
-        if converting:
-            tp = converting[0]
-        else:
-            tp = max(chain, key=lambda t: t["position"])
-        _accumulate(result, tp["channel"], 1.0)
+        tp = converting[0] if converting else max(chain, key=lambda t: t["position"])
+        _accumulate(result, tp["source_code"], 1.0)
     return result
 
 
 def compute_linear(chains: List[List[dict]]) -> Dict[str, float]:
-    """
-    Linear: equal credit (1/N) to every touchpoint in the chain.
-    """
+    """Linear: equal credit (1/N) to every touchpoint in the chain."""
     result: Dict[str, float] = {}
     for chain in chains:
         n = len(chain)
@@ -175,7 +203,7 @@ def compute_linear(chains: List[List[dict]]) -> Dict[str, float]:
             continue
         weight = 1.0 / n
         for tp in chain:
-            _accumulate(result, tp["channel"], weight)
+            _accumulate(result, tp["source_code"], weight)
     return result
 
 
@@ -186,11 +214,8 @@ def compute_time_decay(
     """
     Time decay: weight ∝ 2^(-days_before_conv / half_life).
 
-    Weights are normalised within each chain so that each chain
-    contributes exactly 1.0 conversion in aggregate.
-
-    ``half_life`` is the number of days at which a touchpoint
-    receives half the weight of one on the day of conversion.
+    Weights normalised within each chain so that each chain contributes
+    exactly 1.0 conversion in aggregate.
     """
     if half_life <= 0:
         raise ValueError(f"half_life must be positive, got {half_life}")
@@ -207,5 +232,5 @@ def compute_time_decay(
         if total == 0:
             continue
         for tp, w in zip(chain, raw_weights):
-            _accumulate(result, tp["channel"], w / total)
+            _accumulate(result, tp["source_code"], w / total)
     return result

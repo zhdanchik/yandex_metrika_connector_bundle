@@ -1,8 +1,8 @@
 -- ============================================================
 -- ATTRIBUTION MODELS
 -- ============================================================
--- Computes weighted conversion credit for each channel using
--- four attribution models against the sessions_chains table.
+-- Computes weighted conversion credit per source_code using four
+-- attribution models against the sessions_chains table.
 -- Run AFTER 02_build_chains.sql has completed for this goal_id.
 --
 -- Parameters substituted by handler.py before execution:
@@ -10,90 +10,85 @@
 --   {half_life}  Float   – time-decay half-life in days (default 7.0)
 --
 -- Each model drops its previous data for goal_id (by partition)
--- before inserting fresh results.
+-- before inserting fresh results, making the pipeline idempotent.
 -- ============================================================
 
 
 -- ============================================================
 -- MODEL 1: First Touch
--- 100% of conversion credit goes to the FIRST touchpoint
--- (position = 1, i.e. the oldest visit in the chain).
--- Favours awareness / discovery channels.
+-- 100% credit to the FIRST touchpoint (position = 1).
+-- Favours discovery / awareness channels.
 -- ============================================================
 ALTER TABLE attribution_first_touch DROP PARTITION {goal_id};
 
-INSERT INTO attribution_first_touch (goal_id, channel, conversions)
+INSERT INTO attribution_first_touch (goal_id, source_code, conversions)
 SELECT
     goal_id,
-    channel,
-    toFloat64(count())      AS conversions
+    source_code,
+    toFloat64(count())  AS conversions
 FROM sessions_chains FINAL
 WHERE goal_id = {goal_id}
   AND position = 1
-GROUP BY goal_id, channel;
+GROUP BY goal_id, source_code;
 
 
 -- ============================================================
 -- MODEL 2: Last Touch
--- 100% of conversion credit goes to the LAST touchpoint
--- (is_converting = 1, i.e. the visit that triggered the goal).
--- Favours closing / retargeting channels.
+-- 100% credit to the LAST (converting) touchpoint (is_converting = 1).
+-- Favours retargeting / closing channels.
 -- ============================================================
 ALTER TABLE attribution_last_touch DROP PARTITION {goal_id};
 
-INSERT INTO attribution_last_touch (goal_id, channel, conversions)
+INSERT INTO attribution_last_touch (goal_id, source_code, conversions)
 SELECT
     goal_id,
-    channel,
-    toFloat64(count())      AS conversions
+    source_code,
+    toFloat64(count())  AS conversions
 FROM sessions_chains FINAL
 WHERE goal_id = {goal_id}
   AND is_converting = 1
-GROUP BY goal_id, channel;
+GROUP BY goal_id, source_code;
 
 
 -- ============================================================
 -- MODEL 3: Linear
--- Conversion credit distributed equally across ALL touchpoints.
+-- Credit distributed equally across all touchpoints.
 -- Each touchpoint receives 1 / chain_length of the conversion.
--- Treats every channel as equally important.
 -- ============================================================
 ALTER TABLE attribution_linear DROP PARTITION {goal_id};
 
-INSERT INTO attribution_linear (goal_id, channel, conversions)
+INSERT INTO attribution_linear (goal_id, source_code, conversions)
 SELECT
     goal_id,
-    channel,
+    source_code,
     sum(1.0 / chain_length) AS conversions
 FROM sessions_chains FINAL
 WHERE goal_id = {goal_id}
-GROUP BY goal_id, channel;
+GROUP BY goal_id, source_code;
 
 
 -- ============================================================
 -- MODEL 4: Time Decay
--- Touchpoints closer to the conversion receive exponentially
--- more credit.  Raw weight for each touchpoint:
+-- Touchpoints closer to conversion receive exponentially more
+-- credit.  Raw weight per touchpoint:
 --
 --   w_i = 2 ^ ( -days_before_conv_i / half_life )
 --
--- Weights are normalised within each chain so they sum to 1,
--- then summed across all chains per channel.
+-- Weights are normalised within each chain (sum = 1), then summed
+-- across all chains per source_code.
 --
--- half_life = 7 days means a touchpoint 7 days before conversion
--- receives half the weight of one that happens on the same day.
+-- Default half_life = 7 days: a touchpoint from 7 days before
+-- conversion gets half the weight of one on the day of conversion.
 -- ============================================================
 ALTER TABLE attribution_time_decay DROP PARTITION {goal_id};
 
-INSERT INTO attribution_time_decay (goal_id, channel, conversions)
+INSERT INTO attribution_time_decay (goal_id, source_code, conversions)
 WITH weighted AS (
     SELECT
         goal_id,
         chain_id,
-        channel,
-        -- raw exponential weight
+        source_code,
         pow(2.0, -days_before_conv / {half_life})                    AS raw_weight,
-        -- denominator: sum of raw weights for the whole chain
         sum(pow(2.0, -days_before_conv / {half_life}))
             OVER (PARTITION BY chain_id)                             AS chain_weight_sum
     FROM sessions_chains FINAL
@@ -101,8 +96,7 @@ WITH weighted AS (
 )
 SELECT
     goal_id,
-    channel,
-    -- normalised weight: each chain contributes exactly 1 conversion
+    source_code,
     sum(raw_weight / chain_weight_sum)  AS conversions
 FROM weighted
-GROUP BY goal_id, channel;
+GROUP BY goal_id, source_code;

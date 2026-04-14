@@ -43,12 +43,14 @@ pytestmark = pytest.mark.integration
 
 _INSERT_VISITS = """
 INSERT INTO visits_raw
-(CounterID, VisitID, ClientID, StartTime, Duration, Bounce, PageViews,
- UTMSource, UTMMedium, UTMCampaign, UTMContent, UTMTerm,
- TrafficSource, SearchEngineID, SearchPhrase, AdvEngineID,
- Referer, RefererDomain, StartURL,
- GoalsID, GoalsSerial, GoalsEventTime, GoalsCurrencyID, GoalsPrice,
- FromParam, Sign)
+(CounterID, UserIDHash, VisitID, StartDate, UTCStartTime, Duration, VisitVersion,
+ `TrafficSource.Model`, `TrafficSource.ID`, `TrafficSource.StartTime`,
+ `TrafficSource.SearchEngineID`, `TrafficSource.AdvEngineID`,
+ `TrafficSource.SocialSourceNetworkID`, `TrafficSource.RecommendationSystemID`,
+ `TrafficSource.MessengerID`, `TrafficSource.ClickBannerID`, `TrafficSource.ClickTargetType`,
+ `Goals.ID`, `Goals.Serial`, `Goals.EventTime`, `Goals.Price`, `Goals.Currency`,
+ `EPurchase.ID`, `EPurchase.Revenue`,
+ Sign)
 VALUES
 """
 
@@ -77,10 +79,10 @@ def _insert_visits(client, visits: list) -> None:
 
 
 def _read_attribution(client, table: str, goal_id: int) -> dict:
-    """Return {channel: conversions} from an attribution table."""
+    """Return {source_code: conversions} from an attribution table."""
     rows = client.execute(
-        f"SELECT channel, sum(conversions) FROM {table} FINAL "
-        f"WHERE goal_id = {goal_id} GROUP BY channel"
+        f"SELECT source_code, sum(conversions) FROM {table} FINAL "
+        f"WHERE goal_id = {goal_id} GROUP BY source_code"
     )
     return {row[0]: row[1] for row in rows}
 
