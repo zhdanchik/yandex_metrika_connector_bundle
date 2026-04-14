@@ -118,21 +118,24 @@ SETTINGS index_granularity = 8192;
 -- RESULT TABLES  (rebuilt daily by Cloud Function)
 -- ============================================================
 
--- All four attribution models × three metrics in one table.
+-- All four attribution models in one table, one row per
+-- (goal, model, date, channel).
 -- Computed directly from visits_combined by 05_attribution_models.sql.
 --
 -- attribution_type : 'first_touch' | 'last_touch' | 'linear' | 'time_decay'
--- metric_type      : 'visits' | 'conversions' | 'revenue'
+-- start_date       : date of the chain's endpoint visit (for time-series viz)
 CREATE TABLE IF NOT EXISTS attribution_results
 (
     goal_id             UInt32,
     attribution_type    LowCardinality(String),
-    metric_type         LowCardinality(String),
+    start_date          Date,
     source_code         String,
-    value               Float64,
+    visits              Float64,
+    conversions         Float64,
+    revenue             Float64,
     calculated_at       DateTime    DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(calculated_at)
 PARTITION BY goal_id
-ORDER BY (goal_id, attribution_type, metric_type, source_code)
+ORDER BY (goal_id, attribution_type, start_date, source_code)
 SETTINGS index_granularity = 8192;
