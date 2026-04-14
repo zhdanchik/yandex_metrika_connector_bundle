@@ -240,19 +240,9 @@ def handler(event: dict, context: Any) -> dict:
         return {"statusCode": 500, "body": f"Pipeline failed at step 'combine_visits': {exc}"}
 
     # ----------------------------------------------------------------
-    # Step 4: Unroll chains → sessions_chains
+    # Step 4: Attribution models
     # ----------------------------------------------------------------
-    logger.info("Step 4/4: build_chains")
-    try:
-        _run_sql_file(client, "build_chains", "04_build_chains.sql", params)
-    except Exception as exc:
-        logger.exception("Step build_chains failed: %s", exc)
-        return {"statusCode": 500, "body": f"Pipeline failed at step 'build_chains': {exc}"}
-
-    # ----------------------------------------------------------------
-    # Step 5: Attribution models
-    # ----------------------------------------------------------------
-    logger.info("Step 5/5: attribution_models")
+    logger.info("Step 4/4: attribution_models")
     try:
         _run_sql_file(client, "attribution_models", "05_attribution_models.sql", params)
     except Exception as exc:

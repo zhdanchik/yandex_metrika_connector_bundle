@@ -1,18 +1,16 @@
 -- ============================================================
--- STEP 4: ATTRIBUTION MODELS
+-- STEP 3: ATTRIBUTION MODELS
 -- ============================================================
 -- Computes weighted conversion credit per source_code using four
--- attribution models against sessions_chains.
--- Run AFTER 04_build_chains.sql has completed for this goal_id.
+-- attribution models.  Reads visits_combined directly — no
+-- intermediate row-per-touchpoint table is required.
 --
 -- Parameters substituted by handler.py before execution:
---   {goal_id}    UInt32  – target goal ID (must match chains)
+--   {goal_id}    UInt32  – target goal ID
 --   {half_life}  Float   – time-decay half-life in days (default 7.0)
 --
--- sessions_chains contains ALL session chains (converting and non-
--- converting).  Each model restricts to converting chains via the
--- shared converting_chains subquery:  chains where at least one
--- touchpoint has is_converting = 1.
+-- Only converting chains are counted: WHERE Conversions > 0
+-- (Conversions is the scalar = history.Conversions[-1]).
 --
 -- Each model drops its previous data for goal_id (by partition)
 -- before inserting fresh results, making the pipeline idempotent.
@@ -21,105 +19,103 @@
 
 -- ============================================================
 -- MODEL 1: First Touch
--- 100% credit to the FIRST touchpoint (position = 1).
--- Favours discovery / awareness channels.
+-- 100% credit to history.SourceCode[1] (oldest touchpoint).
 -- ============================================================
 ALTER TABLE attribution_first_touch DROP PARTITION {goal_id};
 
 INSERT INTO attribution_first_touch (goal_id, source_code, conversions)
 SELECT
     goal_id,
-    source_code,
-    toFloat64(count())  AS conversions
-FROM sessions_chains FINAL
+    `history.SourceCode`[1]      AS source_code,
+    toFloat64(count())           AS conversions
+FROM visits_combined FINAL
 WHERE goal_id = {goal_id}
-  AND position = 1
-  AND chain_id IN (
-      SELECT DISTINCT chain_id
-      FROM sessions_chains FINAL
-      WHERE goal_id = {goal_id}
-        AND is_converting = 1
-  )
+  AND Conversions > 0
 GROUP BY goal_id, source_code;
 
 
 -- ============================================================
 -- MODEL 2: Last Touch
--- 100% credit to the converting touchpoint (is_converting = 1).
--- Favours retargeting / closing channels.
+-- 100% credit to history.SourceCode[-1] (converting touchpoint).
 -- ============================================================
 ALTER TABLE attribution_last_touch DROP PARTITION {goal_id};
 
 INSERT INTO attribution_last_touch (goal_id, source_code, conversions)
 SELECT
     goal_id,
-    source_code,
-    toFloat64(count())  AS conversions
-FROM sessions_chains FINAL
+    `history.SourceCode`[-1]     AS source_code,
+    toFloat64(count())           AS conversions
+FROM visits_combined FINAL
 WHERE goal_id = {goal_id}
-  AND is_converting = 1
+  AND Conversions > 0
 GROUP BY goal_id, source_code;
 
 
 -- ============================================================
 -- MODEL 3: Linear
--- Credit distributed equally across all touchpoints in the chain.
--- Each touchpoint receives 1 / chain_length of the conversion.
+-- Equal credit (1 / chain_length) to every touchpoint.
+-- Uses ARRAY JOIN to expand the SourceCode array per chain.
 -- ============================================================
 ALTER TABLE attribution_linear DROP PARTITION {goal_id};
 
 INSERT INTO attribution_linear (goal_id, source_code, conversions)
 SELECT
     goal_id,
-    source_code,
-    sum(1.0 / chain_length) AS conversions
-FROM sessions_chains FINAL
-WHERE goal_id = {goal_id}
-  AND chain_id IN (
-      SELECT DISTINCT chain_id
-      FROM sessions_chains FINAL
-      WHERE goal_id = {goal_id}
-        AND is_converting = 1
-  )
+    src                          AS source_code,
+    sum(1.0 / chain_len)         AS conversions
+FROM
+(
+    SELECT
+        goal_id,
+        toUInt32(length(`history.SourceCode`))  AS chain_len,
+        `history.SourceCode`                    AS src_arr
+    FROM visits_combined FINAL
+    WHERE goal_id = {goal_id}
+      AND Conversions > 0
+)
+ARRAY JOIN src_arr AS src
 GROUP BY goal_id, source_code;
 
 
 -- ============================================================
 -- MODEL 4: Time Decay
--- Touchpoints closer to conversion receive exponentially more
--- credit.  Raw weight per touchpoint:
+-- Weight per touchpoint: 2 ^ (-days_before_conv / half_life).
+-- Weights normalised within each chain so it contributes exactly
+-- 1.0 conversion in aggregate.
 --
---   w_i = 2 ^ ( -days_before_conv_i / half_life )
---
--- Weights are normalised within each chain (sum = 1), then summed
--- across all chains per source_code.
---
--- Default half_life = 7 days: a touchpoint from 7 days before
--- conversion gets half the weight of one on the day of conversion.
+-- days_before_conv_i = (UTCStartTime[-1] - UTCStartTime[i]) / 86400
 -- ============================================================
 ALTER TABLE attribution_time_decay DROP PARTITION {goal_id};
 
 INSERT INTO attribution_time_decay (goal_id, source_code, conversions)
-WITH weighted AS (
-    SELECT
-        goal_id,
-        chain_id,
-        source_code,
-        pow(2.0, -days_before_conv / {half_life})                    AS raw_weight,
-        sum(pow(2.0, -days_before_conv / {half_life}))
-            OVER (PARTITION BY chain_id)                             AS chain_weight_sum
-    FROM sessions_chains FINAL
-    WHERE goal_id = {goal_id}
-      AND chain_id IN (
-          SELECT DISTINCT chain_id
-          FROM sessions_chains FINAL
-          WHERE goal_id = {goal_id}
-            AND is_converting = 1
-      )
-)
 SELECT
     goal_id,
-    source_code,
-    sum(raw_weight / chain_weight_sum)  AS conversions
-FROM weighted
+    src                          AS source_code,
+    sum(w / total_w)             AS conversions
+FROM
+(
+    SELECT
+        goal_id,
+        `history.SourceCode`     AS src_arr,
+        raw_weights,
+        arraySum(raw_weights)    AS total_w
+    FROM
+    (
+        SELECT
+            goal_id,
+            `history.SourceCode` AS src_arr,
+            arrayMap(
+                t -> pow(2.0,
+                    -(toFloat64(toUnixTimestamp(`history.UTCStartTime`[-1]))
+                      - toFloat64(toUnixTimestamp(t)))
+                    / 86400.0 / toFloat64({half_life})
+                ),
+                `history.UTCStartTime`
+            )                    AS raw_weights
+        FROM visits_combined FINAL
+        WHERE goal_id = {goal_id}
+          AND Conversions > 0
+    )
+)
+ARRAY JOIN src_arr AS src, raw_weights AS w
 GROUP BY goal_id, source_code;
