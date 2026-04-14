@@ -7,8 +7,11 @@ Triggered by Cloud Scheduler after YC Data Transfer has finished
 loading the latest Yandex Metrika data into ClickHouse.
 
 Pipeline steps:
-  1. Build touchpoint chains  (sql/02_build_chains.sql)
-  2. Calculate attribution     (sql/03_attribution_models.sql)
+  1. Prepare visits      (sql/02_prepare_visits.sql)
+  2. Compute visit_max_timediff  (inline query — 95th-percentile inter-visit gap)
+  3. Combine visits      (sql/03_combine_visits.sql)
+  4. Build chains        (sql/04_build_chains.sql)
+  5. Attribution models  (sql/05_attribution_models.sql)
 
 Environment variables (injected by Terraform at deploy time):
   CLICKHOUSE_HOST      ClickHouse cluster hostname
@@ -19,7 +22,6 @@ Environment variables (injected by Terraform at deploy time):
   CLICKHOUSE_TLS       '1' to use TLS (default: '1' for Managed CH)
   COUNTER_ID           Yandex Metrika counter ID
   GOAL_ID              Target goal ID for attribution
-  LOOKBACK_DAYS        Attribution lookback window in days (default: 90)
   HALF_LIFE_DAYS       Time-decay half-life in days (default: 7.0)
 """
 
@@ -39,11 +41,37 @@ logging.basicConfig(
 # SQL files bundled alongside this handler in the function zip.
 _SQL_DIR = Path(__file__).parent / "sql"
 
-# Ordered list of SQL files to execute.
-_PIPELINE_STEPS = [
-    ("build_chains", "02_build_chains.sql"),
-    ("attribution_models", "03_attribution_models.sql"),
-]
+# Query to compute the 95th-percentile inter-visit gap (seconds).
+# Mirrors visit_diff_percentile_q from analyse_channels_chain.py.
+# Executed after visits_prepared is populated; result is passed as
+# {visit_max_timediff} to 03_combine_visits.sql.
+_VISIT_MAX_TIMEDIFF_QUERY = """
+SELECT toUInt64(quantile(0.95)(diff)) AS p95
+FROM (
+    SELECT
+        arraySort(groupArray(UTCStartTime)) AS utc_times,
+        arrayEnumerate(utc_times)           AS indexes,
+        arraySlice(
+            arrayMap(
+                y -> if(y = 1,
+                    toUInt64(0),
+                    toUInt64(utc_times[y]) - toUInt64(utc_times[y - 1])
+                ),
+                indexes
+            ),
+            2
+        ) AS diffs
+    FROM visits_prepared
+    GROUP BY CounterID, UserID
+    HAVING length(utc_times) > 1
+)
+ARRAY JOIN diffs AS diff
+WHERE diff > 0
+"""
+
+# Default fallback when visits_prepared has no multi-visit users
+# (e.g. first run with very little data).  30 minutes in seconds.
+_DEFAULT_VISIT_MAX_TIMEDIFF = 1800
 
 
 def _build_params() -> dict:
@@ -51,14 +79,12 @@ def _build_params() -> dict:
     raw = {
         "goal_id": os.environ["GOAL_ID"],
         "counter_id": os.environ["COUNTER_ID"],
-        "lookback_days": os.environ.get("LOOKBACK_DAYS", "90"),
         "half_life": os.environ.get("HALF_LIFE_DAYS", "7.0"),
     }
     try:
         return {
             "goal_id": int(raw["goal_id"]),
             "counter_id": int(raw["counter_id"]),
-            "lookback_days": int(raw["lookback_days"]),
             "half_life": float(raw["half_life"]),
         }
     except (ValueError, TypeError) as exc:
@@ -127,6 +153,34 @@ def _run_sql_file(
             raise
 
 
+def _compute_visit_max_timediff(client: clickhouse_driver.Client) -> int:
+    """
+    Compute the 95th-percentile inter-visit gap in seconds from
+    visits_prepared.  Mirrors visit_diff_percentile_q from
+    analyse_channels_chain.py.
+
+    Returns the computed value, or a default fallback if there are
+    not enough multi-visit users to compute a percentile.
+    """
+    try:
+        rows = client.execute(_VISIT_MAX_TIMEDIFF_QUERY)
+        if rows and rows[0][0] and rows[0][0] > 0:
+            value = int(rows[0][0])
+            logger.info("visit_max_timediff (p95) = %d seconds", value)
+            return value
+    except Exception as exc:
+        logger.warning(
+            "Could not compute visit_max_timediff: %s — using default %d s",
+            exc, _DEFAULT_VISIT_MAX_TIMEDIFF,
+        )
+
+    logger.warning(
+        "visit_max_timediff fallback: %d s (no multi-visit data found)",
+        _DEFAULT_VISIT_MAX_TIMEDIFF,
+    )
+    return _DEFAULT_VISIT_MAX_TIMEDIFF
+
+
 def handler(event: dict, context: Any) -> dict:
     """
     Yandex Cloud Function entry point.
@@ -145,10 +199,9 @@ def handler(event: dict, context: Any) -> dict:
         return {"statusCode": 500, "body": f"Configuration error: {exc}"}
 
     logger.info(
-        "Parameters – counter_id=%s  goal_id=%s  lookback_days=%s  half_life=%s",
+        "Parameters – counter_id=%s  goal_id=%s  half_life=%s",
         params["counter_id"],
         params["goal_id"],
-        params["lookback_days"],
         params["half_life"],
     )
 
@@ -158,17 +211,43 @@ def handler(event: dict, context: Any) -> dict:
         logger.error("Failed to connect to ClickHouse: %s", exc)
         return {"statusCode": 500, "body": f"ClickHouse connection error: {exc}"}
 
-    for step_name, filename in _PIPELINE_STEPS:
-        logger.info("Running step: %s (%s)", step_name, filename)
-        try:
-            _run_sql_file(client, step_name, filename, params)
-            logger.info("Step %s completed successfully", step_name)
-        except Exception as exc:
-            logger.exception("Step %s failed: %s", step_name, exc)
-            return {
-                "statusCode": 500,
-                "body": f"Pipeline failed at step '{step_name}': {exc}",
-            }
+    # ----------------------------------------------------------------
+    # Step 1: Prepare visits (flatten raw → visits_prepared)
+    # ----------------------------------------------------------------
+    logger.info("Step 1/4: prepare_visits")
+    try:
+        _run_sql_file(client, "prepare_visits", "02_prepare_visits.sql", params)
+    except Exception as exc:
+        logger.exception("Step prepare_visits failed: %s", exc)
+        return {"statusCode": 500, "body": f"Pipeline failed at step 'prepare_visits': {exc}"}
+
+    # ----------------------------------------------------------------
+    # Step 2: Compute session timeout (95th-percentile inter-visit gap)
+    # ----------------------------------------------------------------
+    logger.info("Step 2/4: compute visit_max_timediff")
+    visit_max_timediff = _compute_visit_max_timediff(client)
+
+    combine_params = {**params, "visit_max_timediff": visit_max_timediff}
+
+    # ----------------------------------------------------------------
+    # Step 3: Combine visits into session chains (visits_combined)
+    # ----------------------------------------------------------------
+    logger.info("Step 3/4: combine_visits  (visit_max_timediff=%d s)", visit_max_timediff)
+    try:
+        _run_sql_file(client, "combine_visits", "03_combine_visits.sql", combine_params)
+    except Exception as exc:
+        logger.exception("Step combine_visits failed: %s", exc)
+        return {"statusCode": 500, "body": f"Pipeline failed at step 'combine_visits': {exc}"}
+
+    # ----------------------------------------------------------------
+    # Step 4: Attribution models
+    # ----------------------------------------------------------------
+    logger.info("Step 4/4: attribution_models")
+    try:
+        _run_sql_file(client, "attribution_models", "05_attribution_models.sql", params)
+    except Exception as exc:
+        logger.exception("Step attribution_models failed: %s", exc)
+        return {"statusCode": 500, "body": f"Pipeline failed at step 'attribution_models': {exc}"}
 
     logger.info("Attribution transform completed successfully")
     return {"statusCode": 200, "body": "ok"}

@@ -6,22 +6,25 @@ sql/03_attribution_models.sql.  It is used exclusively by the unit
 test suite so that correctness can be verified without a live
 ClickHouse instance.
 
-SourceCode convention matches analyse_channels_chain.py:
-  TraficSourceID values and their SourceCode formats:
-    -1 / 0   → "-1" / "0"          unknown / other referral
-    2        → "2_{SearchEngineID}" organic search
-                 e.g. "2_621" = Yandex, "2_1" = Google
-    3        → "3_{AdvEngineID}"    advertising
-               "3_1_N" with banner  Yandex Direct with banner
-                 e.g. "3_1" = Yandex Direct, "3_2" = Google Ads
-    4        → "4"                  internal link
-    5        → "5"                  bookmarks / saved
-    6        → "6"                  direct (typed URL)
-    7        → "7"                  email
-    8        → "8_{SocialNetworkID}" social
-                 e.g. "8_1" = VK, "8_2" = Facebook, "8_3" = OK
-    9        → "9_{RecSysID}"       recommendation system
-    10       → "10_{MessengerID}"   messenger
+SourceCode convention matches analyse_channels_chain.py.
+Официальные типы источников Яндекс Метрики (TraficSourceID):
+  -1  INTERNAL  Внутренние переходы           → "-1"
+   0  DIRECT    Прямые заходы                 → "0"
+   1  LINK      Переходы по ссылкам на сайтах → "1"
+   2  SEARCH    Из поисковых систем           → "2_{SearchEngineID}"
+                  e.g. "2_621"=Яндекс, "2_1"=Google, "2_3"=Mail.ru
+   3  ADV       Переходы по рекламе           → "3_{AdvEngineID}"
+                  + баннер                    → "3_{AdvEngineID}_{ClickTargetType}"
+                  e.g. "3_1"=Яндекс Директ, "3_2"=Google Ads
+   4  LOCAL     С сохранённых страниц         → "4"
+   5  UNKNOW    Не определён                  → "5"
+   6  EXTERNAL  По внешним ссылкам            → "6"
+   7  MAIL      С почтовых рассылок           → "7"
+   8  SOCIAL    Из социальных сетей           → "8_{SocialSourceNetworkID}"
+                  e.g. "8_1"=VK, "8_2"=Facebook, "8_3"=OK
+   9  RECOMMEND Из рекомендательных систем    → "9_{RecommendationSystemID}"
+  10  MESSENGER Из мессенджеров               → "10_{MessengerID}"
+  11  QR        По QR коду                    → "11"
 
 Each public function accepts a list of *chains*, where a chain is
 a list of touchpoint dicts produced by ``build_chains()``:
