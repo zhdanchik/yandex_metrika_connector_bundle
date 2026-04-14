@@ -28,7 +28,7 @@ SELECT
     goal_id,
     `history.SourceCode`[1]      AS source_code,
     toFloat64(count())           AS conversions
-FROM visits_combined FINAL
+FROM visits_combined
 WHERE goal_id = {goal_id}
   AND Conversions > 0
 GROUP BY goal_id, source_code;
@@ -45,7 +45,7 @@ SELECT
     goal_id,
     `history.SourceCode`[-1]     AS source_code,
     toFloat64(count())           AS conversions
-FROM visits_combined FINAL
+FROM visits_combined
 WHERE goal_id = {goal_id}
   AND Conversions > 0
 GROUP BY goal_id, source_code;
@@ -69,7 +69,7 @@ FROM
         goal_id,
         toUInt32(length(`history.SourceCode`))  AS chain_len,
         `history.SourceCode`                    AS src_arr
-    FROM visits_combined FINAL
+    FROM visits_combined
     WHERE goal_id = {goal_id}
       AND Conversions > 0
 )
@@ -112,7 +112,7 @@ FROM
                 ),
                 `history.UTCStartTime`
             )                    AS raw_weights
-        FROM visits_combined FINAL
+        FROM visits_combined
         WHERE goal_id = {goal_id}
           AND Conversions > 0
     )
