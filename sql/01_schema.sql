@@ -65,14 +65,61 @@ SETTINGS index_granularity = 8192;
 
 
 -- ============================================================
--- DERIVED TABLES
+-- INTERMEDIATE TABLES  (rebuilt by Cloud Function each run)
+-- ============================================================
+
+-- Step 1 output: one row per visit with flat SourceCode and Conversions.
+-- Counter-specific and goal-specific; fully truncated each run.
+-- Mirrors metr_raw from analyse_channels_chain.py.
+CREATE TABLE IF NOT EXISTS visits_prepared
+(
+    CounterID       UInt32,
+    UserID          UInt64,
+    VisitID         UInt64,
+    StartDate       Date,
+    UTCStartTime    DateTime,
+    Duration        UInt32      DEFAULT 0,
+    SourceCode      String,     -- TraficSourceID-based code (see 02_prepare_visits.sql)
+    Conversions     UInt32      DEFAULT 0  -- count of goal_id occurrences in this visit
+)
+ENGINE = MergeTree
+ORDER BY (CounterID, UserID, UTCStartTime, VisitID)
+SETTINGS index_granularity = 8192;
+
+
+-- Step 2 output: one row per (user × converting-visit-position).
+-- Each row stores the full chain as arrays, from the last session
+-- break (NULL sentinel) up to and including the converting visit.
+-- Mirrors metr_combined from analyse_channels_chain.py.
+-- Partitioned by goal_id so multiple goals can coexist.
+CREATE TABLE IF NOT EXISTS visits_combined
+(
+    goal_id                   UInt32,
+    CounterID                 UInt32,
+    UserID                    UInt64,
+    -- Parallel arrays: one element per touchpoint in the chain.
+    -- Last element [-1] is always the converting visit.
+    `history.VisitID`         Array(UInt64),
+    `history.SourceCode`      Array(String),
+    `history.UTCStartTime`    Array(DateTime),
+    `history.EventType`       Array(String),
+    `history.Conversions`     Array(Float64),
+    -- Scalar: conversion count at the chain's endpoint (= history.Conversions[-1])
+    Conversions               Float64
+)
+ENGINE = MergeTree
+PARTITION BY goal_id
+ORDER BY (goal_id, CounterID, UserID)
+SETTINGS index_granularity = 8192;
+
+
+-- ============================================================
+-- RESULT TABLES  (rebuilt daily by Cloud Function)
 -- ============================================================
 
 -- One row per touchpoint in a conversion chain.
--- Rebuilt daily by the Cloud Function.
---
--- source_code follows the SourceCode convention from analyse_channels_chain.py.
--- Официальные типы источников Яндекс Метрики (TraficSourceID):
+-- source_code follows the SourceCode convention from
+-- analyse_channels_chain.py (TraficSourceID-based):
 --   "-1" INTERNAL  Внутренние переходы
 --   "0"  DIRECT    Прямые заходы
 --   "1"  LINK      Переходы по ссылкам на сайтах
@@ -90,13 +137,13 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS sessions_chains
 (
     goal_id             UInt32,
-    chain_id            String,     -- '{user_id}_{unix_conversion_time}'
-    user_id             UInt64,     -- UserIDHash from visits_raw
+    chain_id            String,     -- '{user_id}_{conv_visit_id}'
+    user_id             UInt64,
     conversion_time     DateTime,
     touchpoint_time     DateTime,
     position            UInt32,     -- 1 = oldest touchpoint in chain
     chain_length        UInt32,
-    source_code         String,     -- normalised TraficSourceID-based code
+    source_code         String,
     days_before_conv    Float64,
     is_converting       UInt8       -- 1 if this touchpoint IS the converting visit
 )

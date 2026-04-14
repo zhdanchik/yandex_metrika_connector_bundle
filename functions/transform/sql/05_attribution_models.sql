@@ -1,9 +1,9 @@
 -- ============================================================
--- ATTRIBUTION MODELS
+-- STEP 4: ATTRIBUTION MODELS
 -- ============================================================
 -- Computes weighted conversion credit per source_code using four
--- attribution models against the sessions_chains table.
--- Run AFTER 02_build_chains.sql has completed for this goal_id.
+-- attribution models against sessions_chains.
+-- Run AFTER 04_build_chains.sql has completed for this goal_id.
 --
 -- Parameters substituted by handler.py before execution:
 --   {goal_id}    UInt32  – target goal ID (must match chains)
