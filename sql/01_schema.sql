@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS visits_prepared
     UTCStartTime    DateTime,
     Duration        UInt32      DEFAULT 0,
     SourceCode      String,     -- TraficSourceID-based code (see 02_prepare_visits.sql)
-    Conversions     UInt32      DEFAULT 0   -- count of goal_id occurrences in this visit
+    Conversions     UInt32      DEFAULT 0,  -- count of goal_id occurrences in this visit
+    GoalRevenueCur  Float64     DEFAULT 0   -- sum(Goals.Price / 1e6) for goal_id hits in this visit
 )
 ENGINE = MergeTree
 ORDER BY (CounterID, UserID, UTCStartTime, VisitID)
@@ -103,8 +104,9 @@ CREATE TABLE IF NOT EXISTS visits_combined
     `history.UTCStartTime`    Array(DateTime),
     `history.EventType`       Array(String),
     `history.Conversions`     Array(Float64),
-    -- Scalar: conversion count at the chain's endpoint (= history.Conversions[-1])
-    Conversions               Float64
+    -- Scalars at the chain's endpoint (values of the last visit in the chain).
+    Conversions               Float64,  -- = history.Conversions[-1]
+    GoalRevenueCur            Float64   -- = sum(Goals.Price/1e6) for goal_id at the last visit
 )
 ENGINE = MergeTree
 PARTITION BY goal_id

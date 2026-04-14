@@ -38,7 +38,7 @@
 TRUNCATE TABLE visits_prepared;
 
 INSERT INTO visits_prepared
-    (CounterID, UserID, VisitID, StartDate, UTCStartTime, Duration, SourceCode, Conversions)
+    (CounterID, UserID, VisitID, StartDate, UTCStartTime, Duration, SourceCode, Conversions, GoalRevenueCur)
 
 WITH
 
@@ -90,7 +90,14 @@ flat AS (
         toUInt32(length(arrayFilter(
             x -> x = toUInt32({goal_id}),
             argMax(`Goals.ID`, VisitVersion)
-        )))                                                                              AS Conversions
+        )))                                                                              AS Conversions,
+        -- Sum of Goals.Price / 1e6 for goal_id occurrences in this visit.
+        -- Goals.Price stores values pre-multiplied by 1e6 in Goals.Currency units.
+        toFloat64(arraySum(arrayFilter(
+            (price, id) -> id = toUInt32({goal_id}),
+            argMax(`Goals.Price`, VisitVersion),
+            argMax(`Goals.ID`,    VisitVersion)
+        ))) / 1e6                                                                        AS GoalRevenueCur
     FROM visits_raw
     WHERE CounterID = {counter_id}
     GROUP BY CounterID, UserIDHash, VisitID, StartDate
@@ -121,5 +128,6 @@ SELECT
             '_' || toString(messenger_id),
         ''
     )                                                                                    AS SourceCode,
-    Conversions
+    Conversions,
+    GoalRevenueCur
 FROM flat;

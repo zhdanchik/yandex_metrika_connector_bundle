@@ -40,7 +40,7 @@ INSERT INTO visits_combined
     (goal_id, CounterID, UserID,
      `history.VisitID`, `history.SourceCode`, `history.UTCStartTime`,
      `history.EventType`, `history.Conversions`,
-     Conversions)
+     Conversions, GoalRevenueCur)
 
 SELECT
     toUInt32({goal_id})                                AS goal_id,
@@ -51,7 +51,8 @@ SELECT
     `history.UTCStartTime`,
     `history.EventType`,
     `history.Conversions`,
-    toFloat64(`history.Conversions`[-1])               AS Conversions
+    toFloat64(`history.Conversions`[-1])               AS Conversions,
+    GoalRevenueCur
 FROM
 (
     -- --------------------------------------------------------
@@ -89,7 +90,13 @@ FROM
 
         arraySlice(history_Conversions,
             toInt64(indx) + 1,
-            toInt64(i) - toInt64(indx))                AS `history.Conversions`
+            toInt64(i) - toInt64(indx))                AS `history.Conversions`,
+
+        -- GoalRevenueCur: scalar from the last element of the sliced array.
+        -- Not stored as an array column — only the endpoint value matters.
+        arraySlice(history_GoalRevenueCur,
+            toInt64(indx) + 1,
+            toInt64(i) - toInt64(indx))[-1]            AS GoalRevenueCur
 
     FROM
     (
@@ -105,6 +112,7 @@ FROM
             arrayMap(t -> t.3,  sorted_events)         AS history_SourceCode,
             arrayMap(t -> t.4,  sorted_events)         AS history_EventType,
             arrayMap(t -> t.5,  sorted_events)         AS history_Conversions,
+            arrayMap(t -> t.6,  sorted_events)         AS history_GoalRevenueCur,
             arrayEnumerate(sorted_events)              AS cnt
         FROM
         (
@@ -121,7 +129,8 @@ FROM
                         VisitID,
                         SourceCode,
                         EventType,
-                        toFloat64(Conversions)
+                        toFloat64(Conversions),
+                        toFloat64(GoalRevenueCur)
                     ))
                 )                                      AS sorted_events
             FROM
@@ -133,7 +142,8 @@ FROM
                     CounterID, UTCStartTime, UserID, VisitID,
                     SourceCode,
                     '2_VISIT'           AS EventType,
-                    Conversions
+                    Conversions,
+                    GoalRevenueCur
                 FROM visits_prepared
 
                 UNION ALL
@@ -151,7 +161,8 @@ FROM
                     toUInt64(0)         AS VisitID,
                     'null'              AS SourceCode,
                     '0_NULL'            AS EventType,
-                    toUInt32(0)         AS Conversions
+                    toUInt32(0)         AS Conversions,
+                    toFloat64(0)        AS GoalRevenueCur
                 FROM
                 (
                     SELECT
@@ -195,7 +206,8 @@ FROM
                     toUInt64(0)         AS VisitID,
                     'null'              AS SourceCode,
                     '0_NULL'            AS EventType,
-                    toUInt32(0)         AS Conversions
+                    toUInt32(0)         AS Conversions,
+                    toFloat64(0)        AS GoalRevenueCur
                 FROM visits_prepared
                 GROUP BY CounterID, UserID
             )
