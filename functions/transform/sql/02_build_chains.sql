@@ -13,21 +13,24 @@
 --   {lookback_days} UInt32  – attribution window in days (default 90)
 --
 -- SourceCode convention (mirrors analyse_channels_chain.py):
---   TraficSourceID values:
---     -1 / 0  : unknown / other referral
---     2       : organic search  → "2_{SearchEngineID}"
---               (e.g. 2_621 = Yandex, 2_1 = Google, 2_3 = Mail.ru)
---     3       : advertising     → "3_{AdvEngineID}"
---               + banner case   → "3_{AdvEngineID}_{ClickTargetType}"
---               (e.g. 3_1 = Yandex Direct, 3_2 = Google Ads)
---     4       : internal link   → "4"
---     5       : bookmarks/saved → "5"
---     6       : direct / typed  → "6"
---     7       : email           → "7"
---     8       : social network  → "8_{SocialSourceNetworkID}"
---               (e.g. 8_1 = VK, 8_2 = Facebook, 8_3 = OK)
---     9       : recommendation  → "9_{RecommendationSystemID}"
---     10      : messenger       → "10_{MessengerID}"
+--   TraficSourceID — официальные типы источников Яндекс Метрики:
+--     -1 : INTERNAL  Внутренние переходы          → "-1"
+--      0 : DIRECT    Прямые заходы                → "0"
+--      1 : LINK      Переходы по ссылкам           → "1"
+--      2 : SEARCH    Переходы из поисковых систем  → "2_{SearchEngineID}"
+--                    (2_621 = Яндекс, 2_1 = Google, 2_3 = Mail.ru)
+--      3 : ADV       Переходы по рекламе           → "3_{AdvEngineID}"
+--                    + баннер                      → "3_{AdvEngineID}_{ClickTargetType}"
+--                    (3_1 = Яндекс Директ, 3_2 = Google Ads)
+--      4 : LOCAL     Переходы с сохранённых страниц → "4"
+--      5 : UNKNOW    Не определён                  → "5"
+--      6 : EXTERNAL  Переходы по внешним ссылкам   → "6"
+--      7 : MAIL      Переходы с почтовых рассылок  → "7"
+--      8 : SOCIAL    Переходы из социальных сетей  → "8_{SocialSourceNetworkID}"
+--                    (8_1 = VK, 8_2 = Facebook, 8_3 = OK)
+--      9 : RECOMMEND Переходы из рекомендательных систем → "9_{RecommendationSystemID}"
+--     10 : MESSENGER Переходы из мессенджеров      → "10_{MessengerID}"
+--     11 : QR        Переходы по QR коду           → "11"
 --
 -- Requires ClickHouse 21.6+ for window function support.
 -- ============================================================
@@ -104,6 +107,11 @@ visits_flat AS (
 --
 -- Exactly mirrors the SourceCode expression in
 -- analyse_channels_chain.py (metr_combine_insert_final_query).
+--
+-- Only types 2 (SEARCH), 3 (ADV), 8 (SOCIAL), 9 (RECOMMEND),
+-- 10 (MESSENGER) append a sub-ID suffix.
+-- All other types (-1 INTERNAL, 0 DIRECT, 1 LINK, 4 LOCAL,
+-- 5 UNKNOW, 6 EXTERNAL, 7 MAIL, 11 QR) are left as plain strings.
 -- ----------------------------------------------------------------
 visits_with_source AS (
     SELECT

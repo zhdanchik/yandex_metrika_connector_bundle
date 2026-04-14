@@ -71,17 +71,22 @@ SETTINGS index_granularity = 8192;
 -- One row per touchpoint in a conversion chain.
 -- Rebuilt daily by the Cloud Function.
 --
--- source_code follows the SourceCode convention from
--- analyse_channels_chain.py  (TraficSourceID-based):
---   "2_621"  = Yandex organic (SearchEngineID 621)
---   "2_1"    = Google organic (SearchEngineID 1)
---   "3_1"    = Yandex Direct
---   "3_1_N"  = Yandex Direct with banner (ClickTargetType N)
---   "3_2"    = Google Ads
---   "6"      = direct (typed URL / bookmarks)
---   "8_1"    = VK social
---   "7"      = email
---   etc.
+-- source_code follows the SourceCode convention from analyse_channels_chain.py.
+-- Официальные типы источников Яндекс Метрики (TraficSourceID):
+--   "-1" INTERNAL  Внутренние переходы
+--   "0"  DIRECT    Прямые заходы
+--   "1"  LINK      Переходы по ссылкам на сайтах
+--   "2_N" SEARCH   Из поисковых систем  (N=SearchEngineID: 621=Яндекс, 1=Google)
+--   "3_N" ADV      По рекламе           (N=AdvEngineID: 1=Яндекс Директ, 2=Google Ads)
+--   "3_1_N"        Яндекс Директ с баннером (N=ClickTargetType)
+--   "4"  LOCAL     С сохранённых страниц
+--   "5"  UNKNOW    Не определён
+--   "6"  EXTERNAL  По внешним ссылкам
+--   "7"  MAIL      С почтовых рассылок
+--   "8_N" SOCIAL   Из соцсетей         (N=SocialSourceNetworkID: 1=VK, 2=FB, 3=OK)
+--   "9_N" RECOMMEND Из рекомендательных систем
+--   "10_N" MESSENGER Из мессенджеров
+--   "11" QR        По QR коду
 CREATE TABLE IF NOT EXISTS sessions_chains
 (
     goal_id             UInt32,
