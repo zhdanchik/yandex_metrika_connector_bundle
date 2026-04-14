@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS visits_prepared
     UTCStartTime    DateTime,
     Duration        UInt32      DEFAULT 0,
     SourceCode      String,     -- TraficSourceID-based code (see 02_prepare_visits.sql)
-    Conversions     UInt32      DEFAULT 0  -- count of goal_id occurrences in this visit
+    Conversions     UInt32      DEFAULT 0   -- count of goal_id occurrences in this visit
 )
 ENGINE = MergeTree
 ORDER BY (CounterID, UserID, UTCStartTime, VisitID)
@@ -98,7 +98,6 @@ CREATE TABLE IF NOT EXISTS visits_combined
     CounterID                 UInt32,
     UserID                    UInt64,
     -- Parallel arrays: one element per touchpoint in the chain.
-    -- Last element [-1] is always the converting visit.
     `history.VisitID`         Array(UInt64),
     `history.SourceCode`      Array(String),
     `history.UTCStartTime`    Array(DateTime),
@@ -117,19 +116,21 @@ SETTINGS index_granularity = 8192;
 -- RESULT TABLES  (rebuilt daily by Cloud Function)
 -- ============================================================
 
--- All four attribution models in one table.
+-- All four attribution models × three metrics in one table.
 -- Computed directly from visits_combined by 05_attribution_models.sql.
 --
--- attribution_type values: 'first_touch', 'last_touch', 'linear', 'time_decay'
+-- attribution_type : 'first_touch' | 'last_touch' | 'linear' | 'time_decay'
+-- metric_type      : 'visits' | 'conversions' | 'revenue'
 CREATE TABLE IF NOT EXISTS attribution_results
 (
     goal_id             UInt32,
     attribution_type    LowCardinality(String),
+    metric_type         LowCardinality(String),
     source_code         String,
-    conversions         Float64,
+    value               Float64,
     calculated_at       DateTime    DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(calculated_at)
 PARTITION BY goal_id
-ORDER BY (goal_id, attribution_type, source_code)
+ORDER BY (goal_id, attribution_type, metric_type, source_code)
 SETTINGS index_granularity = 8192;
