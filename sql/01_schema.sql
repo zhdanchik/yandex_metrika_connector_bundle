@@ -117,56 +117,19 @@ SETTINGS index_granularity = 8192;
 -- RESULT TABLES  (rebuilt daily by Cloud Function)
 -- ============================================================
 
--- Attribution results per model (same structure for all four models).
+-- All four attribution models in one table.
 -- Computed directly from visits_combined by 05_attribution_models.sql.
-
-CREATE TABLE IF NOT EXISTS attribution_first_touch
+--
+-- attribution_type values: 'first_touch', 'last_touch', 'linear', 'time_decay'
+CREATE TABLE IF NOT EXISTS attribution_results
 (
     goal_id             UInt32,
+    attribution_type    LowCardinality(String),
     source_code         String,
     conversions         Float64,
     calculated_at       DateTime    DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(calculated_at)
 PARTITION BY goal_id
-ORDER BY (goal_id, source_code)
-SETTINGS index_granularity = 8192;
-
-
-CREATE TABLE IF NOT EXISTS attribution_last_touch
-(
-    goal_id             UInt32,
-    source_code         String,
-    conversions         Float64,
-    calculated_at       DateTime    DEFAULT now()
-)
-ENGINE = ReplacingMergeTree(calculated_at)
-PARTITION BY goal_id
-ORDER BY (goal_id, source_code)
-SETTINGS index_granularity = 8192;
-
-
-CREATE TABLE IF NOT EXISTS attribution_linear
-(
-    goal_id             UInt32,
-    source_code         String,
-    conversions         Float64,
-    calculated_at       DateTime    DEFAULT now()
-)
-ENGINE = ReplacingMergeTree(calculated_at)
-PARTITION BY goal_id
-ORDER BY (goal_id, source_code)
-SETTINGS index_granularity = 8192;
-
-
-CREATE TABLE IF NOT EXISTS attribution_time_decay
-(
-    goal_id             UInt32,
-    source_code         String,
-    conversions         Float64,
-    calculated_at       DateTime    DEFAULT now()
-)
-ENGINE = ReplacingMergeTree(calculated_at)
-PARTITION BY goal_id
-ORDER BY (goal_id, source_code)
+ORDER BY (goal_id, attribution_type, source_code)
 SETTINGS index_granularity = 8192;

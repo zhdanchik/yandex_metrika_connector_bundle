@@ -2,30 +2,29 @@
 -- STEP 3: ATTRIBUTION MODELS
 -- ============================================================
 -- Computes weighted conversion credit per source_code using four
--- attribution models.  Reads visits_combined directly — no
--- intermediate row-per-touchpoint table is required.
+-- attribution models.  Reads visits_combined directly.
+-- Results go into a single attribution_results table partitioned
+-- by goal_id; attribution_type distinguishes the models.
 --
 -- Parameters substituted by handler.py before execution:
 --   {goal_id}    UInt32  – target goal ID
 --   {half_life}  Float   – time-decay half-life in days (default 7.0)
 --
--- Only converting chains are counted: WHERE Conversions > 0
--- (Conversions is the scalar = history.Conversions[-1]).
---
--- Each model drops its previous data for goal_id (by partition)
--- before inserting fresh results, making the pipeline idempotent.
+-- Only converting chains are counted: WHERE Conversions > 0.
+-- One DROP PARTITION clears all models for this goal at once.
 -- ============================================================
+
+ALTER TABLE attribution_results DROP PARTITION {goal_id};
 
 
 -- ============================================================
 -- MODEL 1: First Touch
 -- 100% credit to history.SourceCode[1] (oldest touchpoint).
 -- ============================================================
-ALTER TABLE attribution_first_touch DROP PARTITION {goal_id};
-
-INSERT INTO attribution_first_touch (goal_id, source_code, conversions)
+INSERT INTO attribution_results (goal_id, attribution_type, source_code, conversions)
 SELECT
     goal_id,
+    'first_touch'                AS attribution_type,
     `history.SourceCode`[1]      AS source_code,
     toFloat64(count())           AS conversions
 FROM visits_combined
@@ -38,11 +37,10 @@ GROUP BY goal_id, source_code;
 -- MODEL 2: Last Touch
 -- 100% credit to history.SourceCode[-1] (converting touchpoint).
 -- ============================================================
-ALTER TABLE attribution_last_touch DROP PARTITION {goal_id};
-
-INSERT INTO attribution_last_touch (goal_id, source_code, conversions)
+INSERT INTO attribution_results (goal_id, attribution_type, source_code, conversions)
 SELECT
     goal_id,
+    'last_touch'                 AS attribution_type,
     `history.SourceCode`[-1]     AS source_code,
     toFloat64(count())           AS conversions
 FROM visits_combined
@@ -54,13 +52,11 @@ GROUP BY goal_id, source_code;
 -- ============================================================
 -- MODEL 3: Linear
 -- Equal credit (1 / chain_length) to every touchpoint.
--- Uses ARRAY JOIN to expand the SourceCode array per chain.
 -- ============================================================
-ALTER TABLE attribution_linear DROP PARTITION {goal_id};
-
-INSERT INTO attribution_linear (goal_id, source_code, conversions)
+INSERT INTO attribution_results (goal_id, attribution_type, source_code, conversions)
 SELECT
     goal_id,
+    'linear'                     AS attribution_type,
     src                          AS source_code,
     sum(1.0 / chain_len)         AS conversions
 FROM
@@ -82,14 +78,11 @@ GROUP BY goal_id, source_code;
 -- Weight per touchpoint: 2 ^ (-days_before_conv / half_life).
 -- Weights normalised within each chain so it contributes exactly
 -- 1.0 conversion in aggregate.
---
--- days_before_conv_i = (UTCStartTime[-1] - UTCStartTime[i]) / 86400
 -- ============================================================
-ALTER TABLE attribution_time_decay DROP PARTITION {goal_id};
-
-INSERT INTO attribution_time_decay (goal_id, source_code, conversions)
+INSERT INTO attribution_results (goal_id, attribution_type, source_code, conversions)
 SELECT
     goal_id,
+    'time_decay'                 AS attribution_type,
     src                          AS source_code,
     sum(w / total_w)             AS conversions
 FROM
