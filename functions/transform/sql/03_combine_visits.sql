@@ -205,8 +205,8 @@ FROM
     -- Unroll: one row per (user, position i)
     ARRAY JOIN cnt AS i
 )
--- Keep only converting positions:
---   last SourceCode is a real visit (not a sentinel)
---   last Conversions > 0 (this visit triggered the goal)
-WHERE `history.SourceCode`[-1] != 'null'
-  AND `history.Conversions`[-1] > 0;
+-- All session chains are stored regardless of whether they convert.
+-- Conversion filtering happens downstream in 05_attribution_models.sql.
+-- Rows whose last element is a NULL sentinel (SourceCode = 'null') are
+-- excluded — they are session-boundary markers, not real touchpoints.
+WHERE `history.SourceCode`[-1] != 'null';

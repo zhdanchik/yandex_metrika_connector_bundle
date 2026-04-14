@@ -9,6 +9,11 @@
 --   {goal_id}    UInt32  – target goal ID (must match chains)
 --   {half_life}  Float   – time-decay half-life in days (default 7.0)
 --
+-- sessions_chains contains ALL session chains (converting and non-
+-- converting).  Each model restricts to converting chains via the
+-- shared converting_chains subquery:  chains where at least one
+-- touchpoint has is_converting = 1.
+--
 -- Each model drops its previous data for goal_id (by partition)
 -- before inserting fresh results, making the pipeline idempotent.
 -- ============================================================
@@ -29,12 +34,18 @@ SELECT
 FROM sessions_chains FINAL
 WHERE goal_id = {goal_id}
   AND position = 1
+  AND chain_id IN (
+      SELECT DISTINCT chain_id
+      FROM sessions_chains FINAL
+      WHERE goal_id = {goal_id}
+        AND is_converting = 1
+  )
 GROUP BY goal_id, source_code;
 
 
 -- ============================================================
 -- MODEL 2: Last Touch
--- 100% credit to the LAST (converting) touchpoint (is_converting = 1).
+-- 100% credit to the converting touchpoint (is_converting = 1).
 -- Favours retargeting / closing channels.
 -- ============================================================
 ALTER TABLE attribution_last_touch DROP PARTITION {goal_id};
@@ -52,7 +63,7 @@ GROUP BY goal_id, source_code;
 
 -- ============================================================
 -- MODEL 3: Linear
--- Credit distributed equally across all touchpoints.
+-- Credit distributed equally across all touchpoints in the chain.
 -- Each touchpoint receives 1 / chain_length of the conversion.
 -- ============================================================
 ALTER TABLE attribution_linear DROP PARTITION {goal_id};
@@ -64,6 +75,12 @@ SELECT
     sum(1.0 / chain_length) AS conversions
 FROM sessions_chains FINAL
 WHERE goal_id = {goal_id}
+  AND chain_id IN (
+      SELECT DISTINCT chain_id
+      FROM sessions_chains FINAL
+      WHERE goal_id = {goal_id}
+        AND is_converting = 1
+  )
 GROUP BY goal_id, source_code;
 
 
@@ -93,6 +110,12 @@ WITH weighted AS (
             OVER (PARTITION BY chain_id)                             AS chain_weight_sum
     FROM sessions_chains FINAL
     WHERE goal_id = {goal_id}
+      AND chain_id IN (
+          SELECT DISTINCT chain_id
+          FROM sessions_chains FINAL
+          WHERE goal_id = {goal_id}
+            AND is_converting = 1
+      )
 )
 SELECT
     goal_id,
