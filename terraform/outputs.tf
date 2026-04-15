@@ -18,10 +18,8 @@ output "lockbox_secret_id" {
   value       = module.lockbox.secret_id
 }
 
-output "transfer_id" {
-  description = "ID Data Transfer трансфера (запустить вручную после apply)"
-  value       = module.transfer.transfer_id
-}
+# transfer_id выведен вручную — модуль transfer закомментирован в main.tf
+# (Terraform-провайдер не поддерживает period для Metrika snapshot-источника)
 
 output "trigger_id" {
   description = "ID триггера Cloud Scheduler"

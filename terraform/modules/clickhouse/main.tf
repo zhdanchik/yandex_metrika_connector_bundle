@@ -17,7 +17,7 @@ resource "yandex_mdb_clickhouse_cluster" "main" {
     type             = "CLICKHOUSE"
     zone             = var.zone
     subnet_id        = var.subnet_id
-    assign_public_ip = false
+    assign_public_ip = var.assign_public_ip
   }
 
   database {
@@ -59,14 +59,26 @@ resource "null_resource" "schema" {
       CH_DB       = var.db_name
     }
     command = <<-EOT
-      clickhouse-client \
-        --host     "$CH_HOST" \
-        --port     9440 \
-        --secure   \
-        --user     "$CH_USER" \
-        --password "$CH_PASSWORD" \
-        --database "$CH_DB" \
-        --multiquery \
+      # Write a minimal TLS config that skips certificate verification.
+      # clickhouse 21+ (single binary) reads XML config via --config-file.
+      printf '<clickhouse><openSSL><client><verificationMode>none</verificationMode></client></openSSL></clickhouse>' \
+        > /tmp/ch-tls.xml
+
+      # Support both old-style "clickhouse-client" and new single-binary "clickhouse client"
+      if command -v clickhouse-client &>/dev/null; then
+        CH_BIN="clickhouse-client"
+      else
+        CH_BIN="clickhouse client"
+      fi
+      $CH_BIN \
+        --config-file   /tmp/ch-tls.xml \
+        --host          "$CH_HOST" \
+        --port          9440 \
+        --secure        \
+        --user          "$CH_USER" \
+        --password      "$CH_PASSWORD" \
+        --database      "$CH_DB" \
+        --multiquery    \
         < "${path.module}/../../../sql/01_schema.sql"
     EOT
   }

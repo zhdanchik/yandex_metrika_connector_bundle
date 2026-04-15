@@ -43,21 +43,27 @@ variable "disk_size" {
 }
 
 variable "db_name" {
-  description = "Имя базы данных ClickHouse"
+  description = "Имя базы данных ClickHouse (не может быть 'default' — эта БД уже существует в кластере)"
   type        = string
-  default     = "default"
+  default     = "metrika"
 }
 
 variable "db_user" {
-  description = "Имя пользователя ClickHouse"
+  description = "Имя пользователя ClickHouse (не может быть 'default' — такой пользователь уже существует в кластере)"
   type        = string
-  default     = "default"
+  default     = "analyst"
 }
 
 variable "clickhouse_password" {
   description = "Пароль пользователя ClickHouse (тот же, что кладётся в Lockbox)"
   type        = string
   sensitive   = true
+}
+
+variable "assign_public_ip" {
+  description = "Назначить публичный IP хосту ClickHouse (нужен для DDL-провиженера с локальной машины)"
+  type        = bool
+  default     = true
 }
 
 variable "deletion_protection" {

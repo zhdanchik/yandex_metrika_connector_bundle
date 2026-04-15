@@ -31,7 +31,7 @@ variable "retry_attempts" {
 }
 
 variable "retry_interval" {
-  description = "Интервал между повторными попытками"
-  type        = string
-  default     = "60s"
+  description = "Интервал между повторными попытками в секундах"
+  type        = number
+  default     = 60
 }
