@@ -49,9 +49,9 @@ variable "db_name" {
 }
 
 variable "db_user" {
-  description = "Имя пользователя ClickHouse"
+  description = "Имя пользователя ClickHouse (не может быть 'default' — такой пользователь уже существует в кластере)"
   type        = string
-  default     = "default"
+  default     = "analyst"
 }
 
 variable "clickhouse_password" {
