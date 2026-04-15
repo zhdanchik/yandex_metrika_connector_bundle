@@ -25,13 +25,10 @@ resource "yandex_datatransfer_endpoint" "source" {
 
       streams {
         type = "METRIKA_STREAM_TYPE_VISITS"
-        # Колонки соответствуют схеме visits_raw из sql/01_schema.sql.
-        # Sign и VisitVersion добавляются Data Transfer автоматически.
+        # CounterID, VisitID, StartDate — implicit, API не возвращает их в списке.
+        # Порядок соответствует тому, что API возвращает при чтении (alphabetic по группам).
         columns = [
-          "CounterID",
           "UserIDHash",
-          "VisitID",
-          "StartDate",
           "UTCStartTime",
           "Duration",
           "TrafficSource.Model",

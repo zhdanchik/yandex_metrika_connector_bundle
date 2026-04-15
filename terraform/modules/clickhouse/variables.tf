@@ -60,6 +60,12 @@ variable "clickhouse_password" {
   sensitive   = true
 }
 
+variable "assign_public_ip" {
+  description = "Назначить публичный IP хосту ClickHouse (нужен для DDL-провиженера с локальной машины)"
+  type        = bool
+  default     = true
+}
+
 variable "deletion_protection" {
   description = "Защита кластера от случайного удаления"
   type        = bool

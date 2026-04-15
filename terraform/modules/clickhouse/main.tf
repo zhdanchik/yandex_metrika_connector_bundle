@@ -17,7 +17,7 @@ resource "yandex_mdb_clickhouse_cluster" "main" {
     type             = "CLICKHOUSE"
     zone             = var.zone
     subnet_id        = var.subnet_id
-    assign_public_ip = false
+    assign_public_ip = var.assign_public_ip
   }
 
   database {
