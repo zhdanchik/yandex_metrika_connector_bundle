@@ -1,15 +1,7 @@
 # ──────────────────────────────────────────────────────────────
-# Service account для Cloud Function
-# Получает lockbox.payloadViewer от модуля lockbox (не здесь).
-# ──────────────────────────────────────────────────────────────
-resource "yandex_iam_service_account" "function" {
-  name      = "${var.name}-sa"
-  folder_id = var.folder_id
-}
-
-# ──────────────────────────────────────────────────────────────
-# Service account для записи в Object Storage (только для upload)
-# Статический ключ хранится в Terraform state — стандартный компромисс.
+# Service account для записи zip в Object Storage
+# Изолирован от function SA: статический ключ хранится в Terraform
+# state только для нужд upload'а, не для рантайма функции.
 # ──────────────────────────────────────────────────────────────
 resource "yandex_iam_service_account" "storage" {
   name      = "${var.name}-storage-sa"
@@ -55,6 +47,10 @@ resource "yandex_storage_object" "function_zip" {
 
 # ──────────────────────────────────────────────────────────────
 # Cloud Function
+#
+# Env-переменные содержат только несекретные параметры.
+# Секреты (clickhouse_password) читаются функцией из Lockbox
+# в рантайме через _get_lockbox_payload() в handler.py.
 # ──────────────────────────────────────────────────────────────
 resource "yandex_function" "main" {
   name      = var.name
@@ -64,9 +60,9 @@ resource "yandex_function" "main" {
   entrypoint         = "handler.handler"
   memory             = var.memory
   execution_timeout  = tostring(var.execution_timeout)
-  service_account_id = yandex_iam_service_account.function.id
+  service_account_id = var.service_account_id
 
-  # Изменение хеша перезапускает деплой функции.
+  # Изменение sha256 перезапускает деплой функции.
   user_hash = data.archive_file.function.output_sha256
 
   package {
@@ -75,7 +71,6 @@ resource "yandex_function" "main" {
     sha_256     = data.archive_file.function.output_sha256
   }
 
-  # Только несекретные параметры — секреты читаются из Lockbox в рантайме.
   environment = {
     LOCKBOX_SECRET_ID = var.lockbox_secret_id
     CLICKHOUSE_HOST   = var.clickhouse_host
@@ -88,8 +83,7 @@ resource "yandex_function" "main" {
     HALF_LIFE_DAYS    = tostring(var.half_life_days)
   }
 
-  # Подключение к внутренней VPC: нужно если ClickHouse без публичного IP.
-  # Оставить network_id пустым для функций с публичным доступом к CH.
+  # Подключение к внутренней VPC — нужно если ClickHouse без публичного IP.
   dynamic "connectivity" {
     for_each = var.network_id != "" ? [var.network_id] : []
     content {

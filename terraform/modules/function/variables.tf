@@ -1,10 +1,15 @@
 variable "name" {
-  description = "Имя Cloud Function (также используется как префикс для SA и бакета)"
+  description = "Имя Cloud Function (также используется как префикс для SA бакета)"
   type        = string
 }
 
 variable "folder_id" {
   description = "Yandex Cloud folder ID"
+  type        = string
+}
+
+variable "service_account_id" {
+  description = "ID сервисного аккаунта функции (создаётся в корневом модуле)"
   type        = string
 }
 
@@ -86,7 +91,7 @@ variable "execution_timeout" {
 # --- Сеть ---
 
 variable "network_id" {
-  description = "VPC network ID для подключения функции к внутренней сети (нужно если ClickHouse без публичного IP)"
+  description = "VPC network ID для connectivity block (нужно если ClickHouse без публичного IP)"
   type        = string
   default     = ""
 }
