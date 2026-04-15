@@ -75,12 +75,11 @@ resource "yandex_datatransfer_endpoint" "target" {
 # Запускается вручную после terraform apply или через UI YC.
 # ──────────────────────────────────────────────────────────────
 resource "yandex_datatransfer_transfer" "main" {
-  name               = var.name
-  folder_id          = var.folder_id
-  source_id          = yandex_datatransfer_endpoint.source.id
-  target_id          = yandex_datatransfer_endpoint.target.id
-  type               = "SNAPSHOT_AND_INCREMENT"
-  service_account_id = var.service_account_id
+  name      = var.name
+  folder_id = var.folder_id
+  source_id = yandex_datatransfer_endpoint.source.id
+  target_id = yandex_datatransfer_endpoint.target.id
+  type      = "SNAPSHOT_AND_INCREMENT"
 
   depends_on = [yandex_resourcemanager_folder_iam_member.ch_editor]
 }
