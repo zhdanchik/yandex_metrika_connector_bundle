@@ -59,7 +59,13 @@ resource "null_resource" "schema" {
       CH_DB       = var.db_name
     }
     command = <<-EOT
-      clickhouse-client \
+      # Support both old-style "clickhouse-client" and new single-binary "clickhouse client"
+      if command -v clickhouse-client &>/dev/null; then
+        CH_BIN="clickhouse-client"
+      else
+        CH_BIN="clickhouse client"
+      fi
+      $CH_BIN \
         --host     "$CH_HOST" \
         --port     9440 \
         --secure   \
