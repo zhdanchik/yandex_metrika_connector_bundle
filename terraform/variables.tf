@@ -77,5 +77,5 @@ variable "function_bucket_name" {
 variable "cron_expression" {
   description = "Cron-расписание запуска трансформации (Quartz, UTC)"
   type        = string
-  default     = "0 3 * * *"  # 03:00 UTC ежедневно (стандартный 5-field cron: min hour dom month dow)
+  default     = "0 3 * * ?"  # 03:00 UTC ежедневно (YC cron: min hour dom month dow, dow=?)
 }
