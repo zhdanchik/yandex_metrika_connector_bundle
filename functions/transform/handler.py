@@ -28,6 +28,7 @@ Environment variables (injected by Terraform at deploy time):
 import json
 import logging
 import os
+import re
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -162,10 +163,15 @@ def _substitute_params(sql: str, params: dict) -> str:
     """
     Substitute {name} placeholders with their typed values.
 
-    All substituted values are validated as int or float before
-    formatting, so there is no SQL injection risk.
+    Only replaces placeholders whose names exist in params; unknown
+    {names} (e.g. in SQL comments) are left untouched.  All substituted
+    values are int or float, so there is no SQL injection risk.
     """
-    return sql.format(**params)
+    def _replace(match: re.Match) -> str:
+        key = match.group(1)
+        return str(params[key]) if key in params else match.group(0)
+
+    return re.sub(r"\{(\w+)\}", _replace, sql)
 
 
 def _split_statements(sql: str) -> list[str]:
