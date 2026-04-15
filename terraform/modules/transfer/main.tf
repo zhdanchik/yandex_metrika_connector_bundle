@@ -28,7 +28,7 @@ resource "yandex_datatransfer_endpoint" "source" {
         # CounterID, VisitID, StartDate — implicit, API не возвращает их в списке.
         # Порядок соответствует тому, что API возвращает при чтении (alphabetic по группам).
         columns = [
-          "UserIDHash",
+          "CounterUserIDHash",
           "UTCStartTime",
           "Duration",
           "TrafficSource.Model",
@@ -58,7 +58,7 @@ resource "yandex_datatransfer_endpoint" "source" {
 # Endpoint: приёмник — Managed ClickHouse
 #
 # Пароль берётся из Lockbox через secret_ref.
-# Шардирование по UserIDHash — равномерное распределение визитов.
+# Шардирование по CounterUserIDHash — равномерное распределение визитов.
 # ──────────────────────────────────────────────────────────────
 resource "yandex_datatransfer_endpoint" "target" {
   name      = "${var.name}-target"
@@ -80,7 +80,7 @@ resource "yandex_datatransfer_endpoint" "target" {
 
       sharding {
         column_value_hash {
-          column_name = "UserIDHash"
+          column_name = "CounterUserIDHash"
         }
       }
 

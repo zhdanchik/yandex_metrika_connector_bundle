@@ -7,7 +7,7 @@
 --   https://github.com/zhdanchik/yandex_metrika_connector_cases
 --
 -- Key design points:
---   * CollapsingMergeTree(Sign) — Data Transfer uses +1/-1 sign rows
+--   * VersionedCollapsingMergeTree(Sign, VisitVersion) — Data Transfer uses +1/-1 sign rows
 --   * VisitVersion — Data Transfer may re-send the same VisitID with
 --     corrections; argMax(field, VisitVersion) picks the latest value
 --   * TrafficSource — Nested array; Model=1 marks the primary source
@@ -24,7 +24,7 @@
 CREATE TABLE IF NOT EXISTS visits_raw
 (
     CounterID                              UInt32,
-    UserIDHash                             UInt64,     -- anonymised visitor ID
+    CounterUserIDHash                      UInt64,     -- anonymised visitor ID
     VisitID                                UInt64,
     StartDate                              Date,
     UTCStartTime                           DateTime,
@@ -55,12 +55,12 @@ CREATE TABLE IF NOT EXISTS visits_raw
     `EPurchase.ID`                         Array(UInt64),
     `EPurchase.Revenue`                    Array(Float64),
 
-    -- CollapsingMergeTree sign: +1 = insert, -1 = cancel
+    -- VersionedCollapsingMergeTree sign: +1 = insert, -1 = cancel
     Sign                                   Int8        DEFAULT 1
 )
-ENGINE = CollapsingMergeTree(Sign)
-PARTITION BY toYYYYMM(StartDate)
-ORDER BY (CounterID, UserIDHash, StartDate, VisitID)
+ENGINE = VersionedCollapsingMergeTree(Sign, VisitVersion)
+PARTITION BY toMonday(StartDate)
+ORDER BY (CounterID, StartDate, CounterUserIDHash, VisitID)
 SETTINGS index_granularity = 8192;
 
 

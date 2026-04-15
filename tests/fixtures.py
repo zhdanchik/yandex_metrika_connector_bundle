@@ -160,7 +160,7 @@ def visits_to_ch_rows(visits: List[dict]) -> List[tuple]:
         n_goals = len(goals_id)
         row = (
             v["counter_id"],                                 # CounterID
-            v["user_id"],                                    # UserIDHash
+            v["user_id"],                                    # CounterUserIDHash
             v["visit_id"],                                   # VisitID
             v["utc_start_time"].date(),                      # StartDate
             v["utc_start_time"],                             # UTCStartTime
