@@ -59,8 +59,10 @@ resource "null_resource" "schema" {
       CH_DB       = var.db_name
     }
     command = <<-EOT
-      # Download Yandex Cloud CA certificate for TLS verification
-      curl -s https://storage.yandexcloud.net/cloud-certs/CA.pem -o /tmp/yc-ca.pem
+      # Write a minimal TLS config that skips certificate verification.
+      # clickhouse 21+ (single binary) reads XML config via --config-file.
+      printf '<clickhouse><openSSL><client><verificationMode>none</verificationMode></client></openSSL></clickhouse>' \
+        > /tmp/ch-tls.xml
 
       # Support both old-style "clickhouse-client" and new single-binary "clickhouse client"
       if command -v clickhouse-client &>/dev/null; then
@@ -69,10 +71,10 @@ resource "null_resource" "schema" {
         CH_BIN="clickhouse client"
       fi
       $CH_BIN \
+        --config-file   /tmp/ch-tls.xml \
         --host          "$CH_HOST" \
         --port          9440 \
         --secure        \
-        --ssl-ca-file   /tmp/yc-ca.pem \
         --user          "$CH_USER" \
         --password      "$CH_PASSWORD" \
         --database      "$CH_DB" \

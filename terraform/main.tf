@@ -86,23 +86,26 @@ module "function" {
 
 # ══════════════════════════════════════════════════════════════
 # Data Transfer: Яндекс Метрика → ClickHouse
+#
+# ВНИМАНИЕ: модуль transfer закомментирован.
+# Terraform-провайдер (v0.198) не поддерживает обязательный параметр
+# period (start/end дата) для snapshot-режима Metrika-источника.
+# Создай трансфер вручную через YC Console или CLI:
+#
+#   Источник : Яндекс Метрика, counter_id = <var.counter_id>
+#              OAuth-токен = metrika_oauth_token из Lockbox
+#              Тип потока  : Visits, нужные колонки
+#              Период      : нужный диапазон дат
+#   Приёмник  : Managed ClickHouse, кластер = module.clickhouse.cluster_id
+#              БД = metrika, пользователь = analyst
+#   Тип       : SNAPSHOT_ONLY
+#   SA        : transfer-sa (ID = yandex_iam_service_account.transfer.id)
 # ══════════════════════════════════════════════════════════════
 
-module "transfer" {
-  source = "./modules/transfer"
-
-  name               = "${local.prefix}-metrika"
-  folder_id          = var.folder_id
-  service_account_id = yandex_iam_service_account.transfer.id
-  counter_id         = var.counter_id
-
-  metrika_oauth_token = var.metrika_oauth_token
-  clickhouse_password = var.clickhouse_password
-
-  clickhouse_cluster_id = module.clickhouse.cluster_id
-  clickhouse_db         = module.clickhouse.db_name
-  clickhouse_user       = module.clickhouse.db_user
-}
+# module "transfer" {
+#   source = "./modules/transfer"
+#   ...
+# }
 
 # ══════════════════════════════════════════════════════════════
 # Scheduler: ежедневный запуск трансформации
