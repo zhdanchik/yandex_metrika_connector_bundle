@@ -43,9 +43,9 @@ variable "disk_size" {
 }
 
 variable "db_name" {
-  description = "Имя базы данных ClickHouse"
+  description = "Имя базы данных ClickHouse (не может быть 'default' — эта БД уже существует в кластере)"
   type        = string
-  default     = "default"
+  default     = "metrika"
 }
 
 variable "db_user" {

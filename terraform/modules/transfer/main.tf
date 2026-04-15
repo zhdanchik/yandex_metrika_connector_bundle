@@ -23,10 +23,9 @@ resource "yandex_datatransfer_endpoint" "source" {
         raw = var.metrika_oauth_token
       }
 
-      streams {
-        # Визиты: все поля, включая TrafficSource и Goals.
-        type = "METRIKA_STREAM_TYPE_VISITS"
-      }
+      # streams не задаём: YC Data Transfer сам включит все колонки визитов.
+      # Явное указание streams требует непустой список columns —
+      # конкретные имена колонок лучше задать через консоль YC после apply.
     }
   }
 }
