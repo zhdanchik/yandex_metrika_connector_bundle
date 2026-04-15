@@ -25,8 +25,10 @@ Environment variables (injected by Terraform at deploy time):
   HALF_LIFE_DAYS       Time-decay half-life in days (default: 7.0)
 """
 
+import json
 import logging
 import os
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,46 @@ WHERE diff > 0
 # (e.g. first run with very little data).  30 minutes in seconds.
 _DEFAULT_VISIT_MAX_TIMEDIFF = 1800
 
+# Metadata service endpoint (available inside Yandex Cloud Functions).
+_METADATA_TOKEN_URL = (
+    "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token"
+)
+_LOCKBOX_PAYLOAD_URL = (
+    "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/{secret_id}/payload"
+)
+
+
+def _get_lockbox_payload() -> dict:
+    """
+    Fetch all secret entries from Yandex Lockbox.
+
+    Uses the IAM token obtained from the instance metadata service so
+    that no credentials are stored in environment variables.  The
+    function's service account must hold the lockbox.payloadViewer role
+    on the secret (granted by Terraform).
+
+    Returns a dict mapping entry key → text value.
+    """
+    secret_id = os.environ["LOCKBOX_SECRET_ID"]
+
+    # Step 1: get a short-lived IAM token from the metadata service.
+    meta_req = urllib.request.Request(
+        _METADATA_TOKEN_URL,
+        headers={"Metadata-Flavor": "Google"},
+    )
+    with urllib.request.urlopen(meta_req, timeout=5) as resp:
+        iam_token = json.loads(resp.read())["access_token"]
+
+    # Step 2: fetch the secret payload using the IAM token.
+    secret_req = urllib.request.Request(
+        _LOCKBOX_PAYLOAD_URL.format(secret_id=secret_id),
+        headers={"Authorization": f"Bearer {iam_token}"},
+    )
+    with urllib.request.urlopen(secret_req, timeout=10) as resp:
+        entries = json.loads(resp.read())["entries"]
+
+    return {e["key"]: e["textValue"] for e in entries}
+
 
 def _build_params() -> dict:
     """Read and validate configuration from environment variables."""
@@ -91,8 +133,12 @@ def _build_params() -> dict:
         raise RuntimeError(f"Invalid environment variable: {exc}") from exc
 
 
-def _get_client() -> clickhouse_driver.Client:
-    """Create a ClickHouse native-protocol client."""
+def _get_client(secrets: dict) -> clickhouse_driver.Client:
+    """Create a ClickHouse native-protocol client.
+
+    ``secrets`` is the dict returned by _get_lockbox_payload().
+    The password is never stored in environment variables.
+    """
     use_tls = os.environ.get("CLICKHOUSE_TLS", "1") == "1"
     default_port = 9440 if use_tls else 9000
 
@@ -101,7 +147,7 @@ def _get_client() -> clickhouse_driver.Client:
         port=int(os.environ.get("CLICKHOUSE_PORT", default_port)),
         database=os.environ.get("CLICKHOUSE_DB", "default"),
         user=os.environ.get("CLICKHOUSE_USER", "default"),
-        password=os.environ["CLICKHOUSE_PASSWORD"],
+        password=secrets["clickhouse_password"],
         secure=use_tls,
         verify=use_tls,
         settings={
@@ -205,8 +251,15 @@ def handler(event: dict, context: Any) -> dict:
         params["half_life"],
     )
 
+    # Fetch secrets from Lockbox (password is never stored in env vars).
     try:
-        client = _get_client()
+        secrets = _get_lockbox_payload()
+    except Exception as exc:
+        logger.error("Failed to fetch Lockbox payload: %s", exc)
+        return {"statusCode": 500, "body": f"Lockbox error: {exc}"}
+
+    try:
+        client = _get_client(secrets)
     except Exception as exc:
         logger.error("Failed to connect to ClickHouse: %s", exc)
         return {"statusCode": 500, "body": f"ClickHouse connection error: {exc}"}

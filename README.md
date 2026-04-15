@@ -220,10 +220,228 @@ pytest --integration tests/test_integration.py -v
 
 ---
 
+## Развёртывание (Terraform)
+
+### Требования
+
+| Инструмент | Версия |
+|-----------|--------|
+| Terraform | ≥ 1.5 |
+| Yandex Cloud CLI (`yc`) | последняя |
+| `clickhouse-client` | ≥ 21.1 (для применения DDL-схемы) |
+
+Аутентификация Terraform выполняется через `yc iam create-token` или сервисный аккаунт с ключом (см. [документацию провайдера](https://terraform-provider.yandexcloud.net/)).
+
+---
+
+### Необходимые IAM-роли для того, кто запускает `terraform apply`
+
+| Роль | Зачем |
+|------|-------|
+| `editor` на каталоге | создание большинства ресурсов |
+| `iam.serviceAccounts.admin` | создание SA и назначение ролей |
+| `storage.admin` | Object Storage бакет для zip функции |
+| `mdb.admin` | Managed ClickHouse кластер |
+| `datatransfer.admin` | Data Transfer |
+| `serverless.functions.admin` | Cloud Functions |
+| `lockbox.admin` | Lockbox секрет |
+
+---
+
+### Шаг 1 — Получить учётные данные
+
+**OAuth-токен Яндекс Метрики**
+
+1. Перейдите на [oauth.yandex.ru](https://oauth.yandex.ru/) и создайте приложение с правом `metrika:read`.
+2. Сохраните выданный токен — он понадобится как `metrika_oauth_token`.
+
+**Параметры счётчика и цели**
+
+В интерфейсе Яндекс Метрики найдите:
+- **Номер счётчика** — виден в URL (`metrika.yandex.ru/list/counter/<ID>`)
+- **ID цели** — в разделе «Цели» → кликните на цель → ID в URL
+
+---
+
+### Шаг 2 — Подготовить сеть
+
+Кластер ClickHouse создаётся в приватной подсети. Cloud Function подключается к той же сети через `connectivity.network_id`. Убедитесь, что:
+
+- VPC и подсеть созданы в нужном каталоге
+- На подсеть настроена таблица маршрутизации (NAT-инстанс или Cloud NAT) для выхода функции в интернет (нужен для обращения к Lockbox API)
+
+Получить ID нужных ресурсов:
+
+```bash
+yc vpc network list --folder-id <folder_id>
+yc vpc subnet list   --folder-id <folder_id>
+```
+
+---
+
+### Шаг 3 — Создать `terraform.tfvars`
+
+```bash
+cd terraform/
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Файл `terraform/terraform.tfvars.example`:
+
+```hcl
+folder_id    = "b1g..."          # ID каталога YC
+network_id   = "enpb..."         # ID VPC-сети
+subnet_id    = "e9b..."          # ID подсети (зона ru-central1-a)
+
+counter_id   = 12345678          # Номер счётчика Метрики
+goal_id      = 42                # ID цели конверсии
+
+# Глобально уникальное имя бакета (латиница, цифры, дефисы)
+function_bucket_name = "metrika-attribution-fn-<random-suffix>"
+
+# Секреты — можно задать также через переменные окружения:
+# export TF_VAR_clickhouse_password="..."
+# export TF_VAR_metrika_oauth_token="..."
+clickhouse_password  = "StrongP@ssw0rd"
+metrika_oauth_token  = "y0_AgAAAA..."
+```
+
+> **Безопасность.** Не коммитьте `terraform.tfvars` в git — добавьте его в `.gitignore`.
+> Альтернатива: передавайте чувствительные значения через переменные окружения `TF_VAR_*`.
+
+---
+
+### Шаг 4 — Запустить Terraform
+
+```bash
+cd terraform/
+
+# Инициализация провайдеров и модулей
+terraform init
+
+# Предварительный просмотр изменений (без применения)
+terraform plan -out=tfplan
+
+# Применение (~15 мин: ClickHouse кластер поднимается 10-15 мин)
+terraform apply tfplan
+```
+
+После успешного apply Terraform выведет:
+
+```
+clickhouse_host      = "rc1a-xxxx.mdb.yandexcloud.net"
+clickhouse_cluster_id = "c9q..."
+function_id          = "d4e..."
+lockbox_secret_id    = "e6q..."
+transfer_id          = "dtd..."
+trigger_id           = "..."
+```
+
+---
+
+### Шаг 5 — Запустить Data Transfer
+
+Data Transfer создаётся в статусе `CREATED`, не `RUNNING`. Запустите трансфер вручную:
+
+```bash
+yc datatransfer transfer activate <transfer_id>
+```
+
+Или через консоль YC: **Data Transfer → Трансферы → Активировать**.
+
+Начальная загрузка исторических данных займёт несколько минут–часов в зависимости от объёма.
+
+---
+
+### Шаг 6 — Проверить пайплайн
+
+**Проверить, что данные попали в `visits_raw`:**
+
+```sql
+SELECT count() FROM visits_raw;
+```
+
+**Запустить функцию вручную** (без ожидания расписания):
+
+```bash
+yc serverless function invoke <function_id> \
+  --data '{}'
+```
+
+**Проверить результаты атрибуции:**
+
+```sql
+SELECT attribution_type, source_code, sum(conversions)
+FROM attribution_results
+GROUP BY attribution_type, source_code
+ORDER BY attribution_type, sum(conversions) DESC;
+```
+
+---
+
+### Структура Terraform-модуля
+
+```
+terraform/
+  versions.tf          # Провайдеры: yandex ~> 0.120, archive ~> 2.4
+  variables.tf         # Все входные переменные
+  outputs.tf           # Ключевые ID ресурсов
+  main.tf              # Корневой модуль: SA, IAM, вызов submodules
+
+  modules/
+    lockbox/           # Lockbox-секрет + lockbox.payloadViewer для SA
+    clickhouse/        # Managed ClickHouse кластер + DDL (01_schema.sql)
+    function/          # Cloud Function + Object Storage + zip-архив кода
+    transfer/          # Data Transfer endpoints + трансфер
+    scheduler/         # Timer trigger (ежедневный запуск функции)
+```
+
+**Поток данных секретов:**
+
+```
+terraform.tfvars
+  │  clickhouse_password
+  │  metrika_oauth_token
+  ▼
+Lockbox secret  ──── lockbox.payloadViewer ──▶ function SA
+  │                                            transfer SA
+  │  secret_ref (нативно)
+  ▼
+Data Transfer endpoint  (читает metrika_oauth_token, clickhouse_password)
+
+  │  LOCKBOX_SECRET_ID (env, не секрет)
+  ▼
+Cloud Function  ──── IAM token (metadata) ──▶ Lockbox API
+                                               (читает clickhouse_password)
+```
+
+---
+
+### Пересоздание ресурсов
+
+| Что изменилось | Действие |
+|---------------|---------|
+| Код функции (`functions/transform/`) | `terraform apply` — zip пересобирается автоматически |
+| Схема БД (`sql/01_schema.sql`) | `terraform apply` — `null_resource.schema` перезапускается |
+| Пароль ClickHouse | Обновить в Lockbox вручную **и** `terraform apply` |
+| Новый `goal_id` | Обновить `terraform.tfvars`, `terraform apply` |
+
+---
+
+### Удаление
+
+```bash
+terraform destroy
+```
+
+> Если `deletion_protection = true` на ClickHouse кластере — сначала установите его в `false`.
+
+---
+
 ## Статус разработки
 
 - [x] **Part A** — Ядро трансформаций (SQL + Cloud Function + тесты)
-- [ ] **Part B** — Terraform-модуль
+- [x] **Part B** — Terraform-модуль
 - [ ] **Part C** — Выбор цели конверсии (Marketplace wizard)
 - [ ] **Part D** — DataLens-дашборд
 - [ ] **Part E** — Упаковка в Marketplace

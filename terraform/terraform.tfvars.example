@@ -1,0 +1,30 @@
+# ──────────────────────────────────────────────────────────────
+# Скопируйте этот файл в terraform.tfvars и заполните значения.
+# terraform.tfvars НЕ коммитить в git (он в .gitignore).
+#
+# Альтернатива для секретов — переменные окружения:
+#   export TF_VAR_clickhouse_password="..."
+#   export TF_VAR_metrika_oauth_token="..."
+# ──────────────────────────────────────────────────────────────
+
+# Yandex Cloud
+folder_id  = "b1g..."   # yc resource-manager folder list
+network_id = "enpb..."  # yc vpc network list
+subnet_id  = "e9b..."   # yc vpc subnet list
+
+# Яндекс Метрика
+counter_id = 12345678   # URL в интерфейсе Метрики
+goal_id    = 42         # Раздел «Цели» → ID цели
+
+# Object Storage — имя бакета должно быть глобально уникальным
+function_bucket_name = "metrika-attribution-fn-<random-suffix>"
+
+# Секреты
+clickhouse_password = "StrongP@ssw0rd"
+metrika_oauth_token = "y0_AgAAAA..."
+
+# Опционально — значения по умолчанию можно не указывать
+# name            = "metrika-attribution"
+# zone            = "ru-central1-a"
+# half_life_days  = 7.0
+# cron_expression = "0 0 3 * * ?"  # 03:00 UTC ежедневно
