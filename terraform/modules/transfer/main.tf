@@ -20,10 +20,7 @@ resource "yandex_datatransfer_endpoint" "source" {
       counter_ids = [var.counter_id]
 
       token {
-        secret_ref {
-          secret_id  = var.lockbox_secret_id
-          entry_name = "metrika_oauth_token"
-        }
+        raw = var.metrika_oauth_token
       }
 
       streams {
@@ -53,10 +50,7 @@ resource "yandex_datatransfer_endpoint" "target" {
           user           = var.clickhouse_user
 
           password {
-            secret_ref {
-              secret_id  = var.lockbox_secret_id
-              entry_name = "clickhouse_password"
-            }
+            raw = var.clickhouse_password
           }
         }
       }

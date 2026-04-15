@@ -13,10 +13,7 @@ resource "yandex_function_trigger" "daily" {
   function {
     id                 = var.function_id
     service_account_id = var.invoker_sa_id
-
-    retry_settings {
-      retry_attempts = var.retry_attempts
-      interval       = var.retry_interval
-    }
+    retry_attempts     = var.retry_attempts
+    retry_interval     = var.retry_interval
   }
 }

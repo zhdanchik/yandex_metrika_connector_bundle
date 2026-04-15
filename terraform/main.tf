@@ -94,8 +94,10 @@ module "transfer" {
   name               = "${local.prefix}-metrika"
   folder_id          = var.folder_id
   service_account_id = yandex_iam_service_account.transfer.id
-  lockbox_secret_id  = module.lockbox.secret_id
   counter_id         = var.counter_id
+
+  metrika_oauth_token = var.metrika_oauth_token
+  clickhouse_password = var.clickhouse_password
 
   clickhouse_cluster_id = module.clickhouse.cluster_id
   clickhouse_db         = module.clickhouse.db_name

@@ -13,11 +13,18 @@ variable "service_account_id" {
   type        = string
 }
 
-# --- Lockbox ---
+# --- Секреты (передаются напрямую, т.к. secret_ref не поддерживается провайдером) ---
 
-variable "lockbox_secret_id" {
-  description = "ID Lockbox-секрета с metrika_oauth_token и clickhouse_password"
+variable "metrika_oauth_token" {
+  description = "OAuth-токен Яндекс Метрики для источника Data Transfer"
   type        = string
+  sensitive   = true
+}
+
+variable "clickhouse_password" {
+  description = "Пароль пользователя ClickHouse для приёмника Data Transfer"
+  type        = string
+  sensitive   = true
 }
 
 # --- Источник: Яндекс Метрика ---
