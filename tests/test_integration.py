@@ -56,17 +56,23 @@ VALUES
 
 _SQL_DIR = pathlib.Path(__file__).parent.parent / "sql"
 
+# visit_max_timediff: session-gap threshold in seconds used by 03_combine_visits.sql.
+# Set to 30 days so all test visits (max gap 7 days) fall within one session.
 PARAMS = {
     "goal_id": GOAL_ID,
     "counter_id": COUNTER_ID,
-    "lookback_days": 90,
+    "visit_max_timediff": 30 * 24 * 3600,  # 2 592 000 s
     "half_life": 7.0,
 }
 
 
 def _run_pipeline(client, params: dict) -> None:
     """Execute the full transformation pipeline against the test database."""
-    for filename in ("02_build_chains.sql", "03_attribution_models.sql"):
+    for filename in (
+        "02_prepare_visits.sql",
+        "03_combine_visits.sql",
+        "05_attribution_models.sql",
+    ):
         raw_sql = (_SQL_DIR / filename).read_text(encoding="utf-8")
         sql = raw_sql.format(**params)
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
@@ -78,11 +84,12 @@ def _insert_visits(client, visits: list) -> None:
     client.execute(_INSERT_VISITS, rows)
 
 
-def _read_attribution(client, table: str, goal_id: int) -> dict:
-    """Return {source_code: conversions} from an attribution table."""
+def _read_attribution(client, attribution_type: str, goal_id: int) -> dict:
+    """Return {source_code: conversions} from attribution_results for a given model."""
     rows = client.execute(
-        f"SELECT source_code, sum(conversions) FROM {table} FINAL "
-        f"WHERE goal_id = {goal_id} GROUP BY source_code"
+        f"SELECT source_code, sum(conversions) FROM attribution_results FINAL "
+        f"WHERE goal_id = {goal_id} AND attribution_type = '{attribution_type}' "
+        f"GROUP BY source_code"
     )
     return {row[0]: row[1] for row in rows}
 
@@ -98,33 +105,37 @@ class TestChainBuilding:
         _run_pipeline(client, PARAMS)
 
         rows = client.execute(
-            "SELECT count() FROM sessions_chains FINAL "
+            "SELECT count() FROM visits_combined "
             f"WHERE goal_id = {GOAL_ID}"
         )
         assert rows[0][0] == 1
 
     def test_three_touch_creates_three_chain_rows(self, ch_db):
+        # visits_combined stores one row per sliding window position, so
+        # a 3-visit session produces 3 rows (chains of length 1, 2, 3).
         client, _ = ch_db
         _insert_visits(client, three_touch_visits())
         _run_pipeline(client, PARAMS)
 
         rows = client.execute(
-            "SELECT count() FROM sessions_chains FINAL "
+            "SELECT count() FROM visits_combined "
             f"WHERE goal_id = {GOAL_ID}"
         )
         assert rows[0][0] == 3
 
     def test_positions_are_sequential(self, ch_db):
+        # Chain lengths grow from 1 to N — equivalent to sequential positions.
         client, _ = ch_db
         _insert_visits(client, three_touch_visits())
         _run_pipeline(client, PARAMS)
 
         rows = client.execute(
-            "SELECT position FROM sessions_chains FINAL "
-            f"WHERE goal_id = {GOAL_ID} ORDER BY position"
+            "SELECT length(`history.SourceCode`) FROM visits_combined "
+            f"WHERE goal_id = {GOAL_ID} "
+            f"ORDER BY length(`history.SourceCode`)"
         )
-        positions = [r[0] for r in rows]
-        assert positions == [1, 2, 3]
+        lengths = [r[0] for r in rows]
+        assert lengths == [1, 2, 3]
 
     def test_pipeline_is_idempotent(self, ch_db):
         """Running the pipeline twice should not duplicate results."""
@@ -134,7 +145,7 @@ class TestChainBuilding:
         _run_pipeline(client, PARAMS)
 
         rows = client.execute(
-            "SELECT count() FROM sessions_chains FINAL "
+            "SELECT count() FROM visits_combined "
             f"WHERE goal_id = {GOAL_ID}"
         )
         assert rows[0][0] == 3
@@ -151,7 +162,7 @@ class TestAttributionModels:
         _insert_visits(client, visits)
         _run_pipeline(client, PARAMS)
 
-        actual = _read_attribution(client, "attribution_first_touch", GOAL_ID)
+        actual = _read_attribution(client, "first_touch", GOAL_ID)
         expected = self._expected(compute_first_touch, visits)
 
         assert set(actual.keys()) == set(expected.keys())
@@ -164,7 +175,7 @@ class TestAttributionModels:
         _insert_visits(client, visits)
         _run_pipeline(client, PARAMS)
 
-        actual = _read_attribution(client, "attribution_last_touch", GOAL_ID)
+        actual = _read_attribution(client, "last_touch", GOAL_ID)
         expected = self._expected(compute_last_touch, visits)
 
         assert set(actual.keys()) == set(expected.keys())
@@ -177,7 +188,7 @@ class TestAttributionModels:
         _insert_visits(client, visits)
         _run_pipeline(client, PARAMS)
 
-        actual = _read_attribution(client, "attribution_linear", GOAL_ID)
+        actual = _read_attribution(client, "linear", GOAL_ID)
         expected = self._expected(compute_linear, visits)
 
         assert set(actual.keys()) == set(expected.keys())
@@ -190,7 +201,7 @@ class TestAttributionModels:
         _insert_visits(client, visits)
         _run_pipeline(client, PARAMS)
 
-        actual = _read_attribution(client, "attribution_time_decay", GOAL_ID)
+        actual = _read_attribution(client, "time_decay", GOAL_ID)
         expected = self._expected(
             lambda c: compute_time_decay(c, half_life=PARAMS["half_life"]),
             visits,
@@ -208,17 +219,12 @@ class TestAttributionModels:
 
         n_chains = len(build_chains(visits, GOAL_ID))
 
-        for table in (
-            "attribution_first_touch",
-            "attribution_last_touch",
-            "attribution_linear",
-            "attribution_time_decay",
-        ):
+        for attr_type in ("first_touch", "last_touch", "linear", "time_decay"):
             rows = client.execute(
-                f"SELECT sum(conversions) FROM {table} FINAL "
-                f"WHERE goal_id = {GOAL_ID}"
+                f"SELECT sum(conversions) FROM attribution_results FINAL "
+                f"WHERE goal_id = {GOAL_ID} AND attribution_type = '{attr_type}'"
             )
             total = rows[0][0]
             assert total == pytest.approx(n_chains, abs=1e-6), (
-                f"{table}: expected {n_chains} total conversions, got {total}"
+                f"{attr_type}: expected {n_chains} total conversions, got {total}"
             )
