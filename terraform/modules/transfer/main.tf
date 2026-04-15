@@ -102,7 +102,9 @@ resource "yandex_datatransfer_transfer" "main" {
   folder_id = var.folder_id
   source_id = yandex_datatransfer_endpoint.source.id
   target_id = yandex_datatransfer_endpoint.target.id
-  type      = "SNAPSHOT_AND_INCREMENT"
+  # Metrika Logs API is batch-based; SNAPSHOT_AND_INCREMENT is not supported.
+  # Run repeated SNAPSHOT_ONLY transfers on a schedule to pull new data.
+  type      = "SNAPSHOT_ONLY"
 
   depends_on = [yandex_resourcemanager_folder_iam_member.ch_editor]
 }

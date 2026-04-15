@@ -59,6 +59,9 @@ resource "null_resource" "schema" {
       CH_DB       = var.db_name
     }
     command = <<-EOT
+      # Download Yandex Cloud CA certificate for TLS verification
+      curl -s https://storage.yandexcloud.net/cloud-certs/CA.pem -o /tmp/yc-ca.pem
+
       # Support both old-style "clickhouse-client" and new single-binary "clickhouse client"
       if command -v clickhouse-client &>/dev/null; then
         CH_BIN="clickhouse-client"
@@ -66,13 +69,14 @@ resource "null_resource" "schema" {
         CH_BIN="clickhouse client"
       fi
       $CH_BIN \
-        --host     "$CH_HOST" \
-        --port     9440 \
-        --secure   \
-        --user     "$CH_USER" \
-        --password "$CH_PASSWORD" \
-        --database "$CH_DB" \
-        --multiquery \
+        --host          "$CH_HOST" \
+        --port          9440 \
+        --secure        \
+        --ssl-ca-file   /tmp/yc-ca.pem \
+        --user          "$CH_USER" \
+        --password      "$CH_PASSWORD" \
+        --database      "$CH_DB" \
+        --multiquery    \
         < "${path.module}/../../../sql/01_schema.sql"
     EOT
   }
