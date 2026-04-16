@@ -34,8 +34,6 @@
 -- consider chunking the INSERT in handler.py.
 -- ============================================================
 
-ALTER TABLE visits_combined DROP PARTITION {goal_id};
-
 INSERT INTO visits_combined
     (goal_id, CounterID, UserID,
      `history.VisitID`, `history.SourceCode`, `history.UTCStartTime`,

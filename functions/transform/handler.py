@@ -313,7 +313,12 @@ def handler(event: dict, context: Any) -> dict:
     # ----------------------------------------------------------------
     # Step 1: Prepare visits (flatten raw → visits_prepared)
     # ----------------------------------------------------------------
-    logger.info("Step 1/4: prepare_visits")
+    logger.info("Step 1/4: prepare_visits — truncating visits_prepared")
+    try:
+        client.execute("TRUNCATE TABLE visits_prepared")
+    except Exception as exc:
+        logger.exception("TRUNCATE visits_prepared failed: %s", exc)
+        return {"statusCode": 500, "body": f"Pipeline failed at step 'prepare_visits' (truncate): {exc}"}
     try:
         _run_sql_file(client, "prepare_visits", "02_prepare_visits.sql", params)
     except Exception as exc:
@@ -331,7 +336,15 @@ def handler(event: dict, context: Any) -> dict:
     # ----------------------------------------------------------------
     # Step 3: Combine visits into session chains (visits_combined)
     # ----------------------------------------------------------------
-    logger.info("Step 3/4: combine_visits  (visit_max_timediff=%d s)", visit_max_timediff)
+    logger.info(
+        "Step 3/4: combine_visits — dropping partition %s  (visit_max_timediff=%d s)",
+        params["goal_id"], visit_max_timediff,
+    )
+    try:
+        client.execute(f"ALTER TABLE visits_combined DROP PARTITION {params['goal_id']}")
+    except Exception as exc:
+        logger.exception("DROP PARTITION visits_combined failed: %s", exc)
+        return {"statusCode": 500, "body": f"Pipeline failed at step 'combine_visits' (drop partition): {exc}"}
     try:
         _run_sql_file(client, "combine_visits", "03_combine_visits.sql", combine_params)
     except Exception as exc:
@@ -341,7 +354,12 @@ def handler(event: dict, context: Any) -> dict:
     # ----------------------------------------------------------------
     # Step 4: Attribution models
     # ----------------------------------------------------------------
-    logger.info("Step 4/4: attribution_models")
+    logger.info("Step 4/4: attribution_models — dropping partition %s", params["goal_id"])
+    try:
+        client.execute(f"ALTER TABLE attribution_results DROP PARTITION {params['goal_id']}")
+    except Exception as exc:
+        logger.exception("DROP PARTITION attribution_results failed: %s", exc)
+        return {"statusCode": 500, "body": f"Pipeline failed at step 'attribution_models' (drop partition): {exc}"}
     try:
         _run_sql_file(client, "attribution_models", "05_attribution_models.sql", params)
     except Exception as exc:

@@ -34,9 +34,6 @@
 --   11 QR        По QR коду                    → "11"
 -- ============================================================
 
--- Fully rebuild for this (counter, goal) pair each run.
-TRUNCATE TABLE visits_prepared;
-
 INSERT INTO visits_prepared
     (CounterID, UserID, VisitID, StartDate, UTCStartTime, Duration, SourceCode, Conversions, GoalRevenueCur)
 

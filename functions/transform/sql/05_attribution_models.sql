@@ -19,9 +19,6 @@
 -- One DROP PARTITION clears all models for this goal at once.
 -- ============================================================
 
-ALTER TABLE attribution_results DROP PARTITION {goal_id};
-
-
 -- ============================================================
 -- MODEL 1: First Touch
 -- 100% credit to history.SourceCode[1] (oldest touchpoint).
