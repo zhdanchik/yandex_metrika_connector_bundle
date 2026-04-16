@@ -134,6 +134,26 @@ def _build_params() -> dict:
         raise RuntimeError(f"Invalid environment variable: {exc}") from exc
 
 
+_YC_CA_URL = "https://storage.yandexcloud.net/cloud-certs/CA.pem"
+_YC_CA_TMP  = "/tmp/yandex-ca.pem"
+
+
+def _ca_cert_path() -> str:
+    """Return a path to the Yandex Cloud CA certificate.
+
+    Prefers the file bundled with the function zip (CA.pem next to
+    handler.py).  Falls back to downloading from Yandex Object Storage,
+    which is reachable from Cloud Functions without extra network rules.
+    """
+    bundled = Path(__file__).parent / "CA.pem"
+    if bundled.exists():
+        return str(bundled)
+
+    logger.info("CA.pem not bundled; downloading from %s", _YC_CA_URL)
+    urllib.request.urlretrieve(_YC_CA_URL, _YC_CA_TMP)
+    return _YC_CA_TMP
+
+
 def _get_client(secrets: dict) -> clickhouse_driver.Client:
     """Create a ClickHouse native-protocol client.
 
@@ -151,7 +171,7 @@ def _get_client(secrets: dict) -> clickhouse_driver.Client:
         password=secrets["clickhouse_password"],
         secure=use_tls,
         verify=use_tls,
-        ca_certs=str(Path(__file__).parent / "CA.pem") if use_tls else None,
+        ca_certs=_ca_cert_path() if use_tls else None,
         settings={
             # Allow long-running mutations (DROP PARTITION) to complete.
             "receive_timeout": 300,
