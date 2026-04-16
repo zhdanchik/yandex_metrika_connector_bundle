@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,15 @@ def _get_client(secrets: dict) -> clickhouse_driver.Client:
     use_tls = os.environ.get("CLICKHOUSE_TLS", "1") == "1"
     default_port = 9440 if use_tls else 9000
 
+    ssl_ctx: ssl.SSLContext | None = None
+    if use_tls:
+        # Start with system CAs (check_hostname=True, verify_mode=CERT_REQUIRED),
+        # then add the Yandex internal CA so Managed ClickHouse certs are trusted.
+        ssl_ctx = ssl.create_default_context()
+        ca_path = _ca_cert_path()
+        ssl_ctx.load_verify_locations(cafile=ca_path)
+        logger.info("TLS: using CA cert from %s", ca_path)
+
     return clickhouse_driver.Client(
         host=os.environ["CLICKHOUSE_HOST"],
         port=int(os.environ.get("CLICKHOUSE_PORT", default_port)),
@@ -170,8 +180,7 @@ def _get_client(secrets: dict) -> clickhouse_driver.Client:
         user=os.environ.get("CLICKHOUSE_USER", "default"),
         password=secrets["clickhouse_password"],
         secure=use_tls,
-        verify=use_tls,
-        ca_certs=_ca_cert_path() if use_tls else None,
+        ssl_context=ssl_ctx,
         settings={
             # Allow long-running mutations (DROP PARTITION) to complete.
             "receive_timeout": 300,
