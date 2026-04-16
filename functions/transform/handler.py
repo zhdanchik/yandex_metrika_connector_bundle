@@ -215,6 +215,13 @@ def _run_sql_file(
     sql = _substitute_params(raw_sql, params)
     statements = _split_statements(sql)
 
+    # Disconnect before the first statement so any previous query's
+    # unread packets (e.g. from _compute_visit_max_timediff) are flushed.
+    try:
+        client.disconnect()
+    except Exception:
+        pass
+
     logger.info("[%s] %d statements to execute", step_name, len(statements))
     for idx, stmt in enumerate(statements, 1):
         preview = stmt[:120].replace("\n", " ")
