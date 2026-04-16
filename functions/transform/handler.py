@@ -227,6 +227,15 @@ def _run_sql_file(
                 step_name, idx, len(statements), exc, stmt,
             )
             raise
+        finally:
+            # Disconnect after each statement except the last so that DDL
+            # operations (ALTER TABLE, TRUNCATE) don't leave unread Progress
+            # packets in the TCP buffer, which would confuse the next query.
+            if idx < len(statements):
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
 
 
 def _compute_visit_max_timediff(client: clickhouse_driver.Client) -> int:
