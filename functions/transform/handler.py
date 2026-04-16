@@ -154,19 +154,18 @@ def _ca_cert_path() -> str:
     return _YC_CA_TMP
 
 
-def _get_client(secrets: dict) -> clickhouse_driver.Client:
-    """Create a ClickHouse native-protocol client.
+def _client_kwargs(secrets: dict) -> dict:
+    """Return kwargs for clickhouse_driver.Client constructor.
 
-    ``secrets`` is the dict returned by _get_lockbox_payload().
-    The password is never stored in environment variables.
+    Call _new_client() to get a fresh connection; never reuse Client objects
+    across queries — DDL/SELECT leave unread TCP packets that corrupt the
+    next execute() on the same connection.
     """
     use_tls = os.environ.get("CLICKHOUSE_TLS", "1") == "1"
     default_port = 9440 if use_tls else 9000
-
     ca_path = _ca_cert_path() if use_tls else None
     logger.info("TLS=%s  ca_cert=%s", use_tls, ca_path)
-
-    return clickhouse_driver.Client(
+    return dict(
         host=os.environ["CLICKHOUSE_HOST"],
         port=int(os.environ.get("CLICKHOUSE_PORT", default_port)),
         database=os.environ.get("CLICKHOUSE_DB", "default"),
@@ -175,12 +174,13 @@ def _get_client(secrets: dict) -> clickhouse_driver.Client:
         secure=use_tls,
         verify=use_tls,
         ca_certs=ca_path,
-        settings={
-            # Allow long-running mutations (DROP PARTITION) to complete.
-            "receive_timeout": 300,
-            "send_timeout": 300,
-        },
+        settings={"receive_timeout": 300, "send_timeout": 300},
     )
+
+
+def _new_client(kwargs: dict) -> clickhouse_driver.Client:
+    """Create a brand-new ClickHouse client (fresh TCP connection)."""
+    return clickhouse_driver.Client(**kwargs)
 
 
 def _substitute_params(sql: str, params: dict) -> str:
@@ -204,28 +204,26 @@ def _split_statements(sql: str) -> list[str]:
 
 
 def _run_sql_file(
-    client: clickhouse_driver.Client,
+    ch_kwargs: dict,
     step_name: str,
     filename: str,
     params: dict,
 ) -> None:
-    """Load a SQL file, substitute parameters, and execute each statement."""
+    """Load a SQL file, substitute parameters, and execute each statement.
+
+    A fresh Client (new TCP connection) is created for every statement so
+    that DDL Progress packets from one query never pollute the next.
+    """
     sql_path = _SQL_DIR / filename
     raw_sql = sql_path.read_text(encoding="utf-8")
     sql = _substitute_params(raw_sql, params)
     statements = _split_statements(sql)
 
-    # Disconnect before the first statement so any previous query's
-    # unread packets (e.g. from _compute_visit_max_timediff) are flushed.
-    try:
-        client.disconnect()
-    except Exception:
-        pass
-
     logger.info("[%s] %d statements to execute", step_name, len(statements))
     for idx, stmt in enumerate(statements, 1):
         preview = stmt[:120].replace("\n", " ")
         logger.info("[%s] %d/%d  %s…", step_name, idx, len(statements), preview)
+        client = _new_client(ch_kwargs)
         try:
             client.execute(stmt)
         except Exception as exc:
@@ -234,28 +232,16 @@ def _run_sql_file(
                 step_name, idx, len(statements), exc, stmt,
             )
             raise
-        finally:
-            # Disconnect after each statement except the last so that DDL
-            # operations (ALTER TABLE, TRUNCATE) don't leave unread Progress
-            # packets in the TCP buffer, which would confuse the next query.
-            if idx < len(statements):
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
 
 
-def _compute_visit_max_timediff(client: clickhouse_driver.Client) -> int:
-    """
-    Compute the 95th-percentile inter-visit gap in seconds from
-    visits_prepared.  Mirrors visit_diff_percentile_q from
-    analyse_channels_chain.py.
+def _compute_visit_max_timediff(ch_kwargs: dict) -> int:
+    """Compute the 95th-percentile inter-visit gap from visits_prepared.
 
-    Returns the computed value, or a default fallback if there are
-    not enough multi-visit users to compute a percentile.
+    Uses a fresh Client so its SELECT doesn't dirty the caller's connection.
+    Returns the computed value, or a default fallback.
     """
     try:
-        rows = client.execute(_VISIT_MAX_TIMEDIFF_QUERY)
+        rows = _new_client(ch_kwargs).execute(_VISIT_MAX_TIMEDIFF_QUERY)
         if rows and rows[0][0] and rows[0][0] > 0:
             value = int(rows[0][0])
             logger.info("visit_max_timediff (p95) = %d seconds", value)
@@ -305,7 +291,9 @@ def handler(event: dict, context: Any) -> dict:
         return {"statusCode": 500, "body": f"Lockbox error: {exc}"}
 
     try:
-        client = _get_client(secrets)
+        ch_kwargs = _client_kwargs(secrets)
+        # Smoke-test: verify credentials/connectivity before running the pipeline.
+        _new_client(ch_kwargs).execute("SELECT 1")
     except Exception as exc:
         logger.error("Failed to connect to ClickHouse: %s", exc)
         return {"statusCode": 500, "body": f"ClickHouse connection error: {exc}"}
@@ -315,12 +303,12 @@ def handler(event: dict, context: Any) -> dict:
     # ----------------------------------------------------------------
     logger.info("Step 1/4: prepare_visits — truncating visits_prepared")
     try:
-        client.execute("TRUNCATE TABLE visits_prepared")
+        _new_client(ch_kwargs).execute("TRUNCATE TABLE visits_prepared")
     except Exception as exc:
         logger.exception("TRUNCATE visits_prepared failed: %s", exc)
         return {"statusCode": 500, "body": f"Pipeline failed at step 'prepare_visits' (truncate): {exc}"}
     try:
-        _run_sql_file(client, "prepare_visits", "02_prepare_visits.sql", params)
+        _run_sql_file(ch_kwargs, "prepare_visits", "02_prepare_visits.sql", params)
     except Exception as exc:
         logger.exception("Step prepare_visits failed: %s", exc)
         return {"statusCode": 500, "body": f"Pipeline failed at step 'prepare_visits': {exc}"}
@@ -329,7 +317,7 @@ def handler(event: dict, context: Any) -> dict:
     # Step 2: Compute session timeout (95th-percentile inter-visit gap)
     # ----------------------------------------------------------------
     logger.info("Step 2/4: compute visit_max_timediff")
-    visit_max_timediff = _compute_visit_max_timediff(client)
+    visit_max_timediff = _compute_visit_max_timediff(ch_kwargs)
 
     combine_params = {**params, "visit_max_timediff": visit_max_timediff}
 
@@ -341,12 +329,14 @@ def handler(event: dict, context: Any) -> dict:
         params["goal_id"], visit_max_timediff,
     )
     try:
-        client.execute(f"ALTER TABLE visits_combined DROP PARTITION {params['goal_id']}")
+        _new_client(ch_kwargs).execute(
+            f"ALTER TABLE visits_combined DROP PARTITION {params['goal_id']}"
+        )
     except Exception as exc:
         logger.exception("DROP PARTITION visits_combined failed: %s", exc)
         return {"statusCode": 500, "body": f"Pipeline failed at step 'combine_visits' (drop partition): {exc}"}
     try:
-        _run_sql_file(client, "combine_visits", "03_combine_visits.sql", combine_params)
+        _run_sql_file(ch_kwargs, "combine_visits", "03_combine_visits.sql", combine_params)
     except Exception as exc:
         logger.exception("Step combine_visits failed: %s", exc)
         return {"statusCode": 500, "body": f"Pipeline failed at step 'combine_visits': {exc}"}
@@ -356,12 +346,14 @@ def handler(event: dict, context: Any) -> dict:
     # ----------------------------------------------------------------
     logger.info("Step 4/4: attribution_models — dropping partition %s", params["goal_id"])
     try:
-        client.execute(f"ALTER TABLE attribution_results DROP PARTITION {params['goal_id']}")
+        _new_client(ch_kwargs).execute(
+            f"ALTER TABLE attribution_results DROP PARTITION {params['goal_id']}"
+        )
     except Exception as exc:
         logger.exception("DROP PARTITION attribution_results failed: %s", exc)
         return {"statusCode": 500, "body": f"Pipeline failed at step 'attribution_models' (drop partition): {exc}"}
     try:
-        _run_sql_file(client, "attribution_models", "05_attribution_models.sql", params)
+        _run_sql_file(ch_kwargs, "attribution_models", "05_attribution_models.sql", params)
     except Exception as exc:
         logger.exception("Step attribution_models failed: %s", exc)
         return {"statusCode": 500, "body": f"Pipeline failed at step 'attribution_models': {exc}"}
