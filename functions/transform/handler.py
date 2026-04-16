@@ -150,7 +150,8 @@ def _get_client(secrets: dict) -> clickhouse_driver.Client:
         user=os.environ.get("CLICKHOUSE_USER", "default"),
         password=secrets["clickhouse_password"],
         secure=use_tls,
-        verify=False,  # Yandex Cloud uses its own CA; skip cert verification inside YC
+        verify=use_tls,
+        ca_certs=str(Path(__file__).parent / "CA.pem") if use_tls else None,
         settings={
             # Allow long-running mutations (DROP PARTITION) to complete.
             "receive_timeout": 300,
