@@ -16,8 +16,8 @@
 --
 -- Algorithm (identical to original):
 --   1. Create '2_VISIT' events for each real visit.
---   2. Find consecutive visit pairs where gap > visit_max_timediff;
---      insert a '0_NULL' sentinel timed at gap_start + visit_max_timediff.
+--   2. Find consecutive visit pairs where gap > visit_max_timediff
+--      and insert a '0_NULL' sentinel timed at gap_start + visit_max_timediff.
 --   3. Insert a final '0_NULL' sentinel at max(UTCStartTime)+visit_max_timediff
 --      for every user (closes the last session).
 --   4. Sort all events by (UTCStartTime, EventType) — '0_NULL' < '2_VISIT'

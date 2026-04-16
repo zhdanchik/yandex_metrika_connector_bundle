@@ -196,8 +196,33 @@ def _substitute_params(sql: str, params: dict) -> str:
 
 
 def _split_statements(sql: str) -> list[str]:
-    """Split a SQL file into individual statements on ';'."""
-    return [s.strip() for s in sql.split(";") if s.strip()]
+    """Split SQL on semicolons, ignoring semicolons inside -- line comments."""
+    statements: list[str] = []
+    current: list[str] = []
+
+    for line in sql.splitlines(keepends=True):
+        comment_pos = line.find("--")
+        semi_pos = line.find(";")
+
+        if semi_pos == -1 or (comment_pos != -1 and comment_pos < semi_pos):
+            # No semicolon, or the only semicolon is inside a -- comment
+            current.append(line)
+        else:
+            # Semicolon is in actual SQL (before any comment on this line)
+            current.append(line[:semi_pos])
+            stmt = "".join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+            tail = line[semi_pos + 1:]
+            if tail.strip():
+                current.append(tail)
+
+    tail_stmt = "".join(current).strip()
+    if tail_stmt:
+        statements.append(tail_stmt)
+
+    return statements
 
 
 def _run_sql_file(
