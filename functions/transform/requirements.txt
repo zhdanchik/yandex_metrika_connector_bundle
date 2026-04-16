@@ -1,1 +1,2 @@
-clickhouse-driver[numpy]==0.2.9
+# No third-party dependencies: ClickHouse is accessed via its HTTP/HTTPS
+# interface using Python stdlib (urllib, ssl).
