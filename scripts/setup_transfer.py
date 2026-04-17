@@ -278,45 +278,90 @@ def _print_ui_instructions(src_id: str, tgt_id: str, env: dict) -> None:
     )
 
 
+def _walk_wire(raw: bytes, known_numbers: set, depth: int = 0) -> list:
+    """Return list of (field_number, wire_type, payload_bytes, is_known)."""
+    results = []
+    i = 0
+    while i < len(raw):
+        try:
+            key, n = _read_varint(raw, i); i += n
+        except IndexError:
+            break
+        fn, wt = key >> 3, key & 7
+        if wt == 2:                       # length-delimited
+            length, n = _read_varint(raw, i); i += n
+            chunk = raw[i:i+length]; i += length
+            results.append((fn, wt, chunk, fn in known_numbers))
+        elif wt == 0:                     # varint
+            v, n = _read_varint(raw, i); i += n
+            results.append((fn, wt, v, fn in known_numbers))
+        elif wt == 1:                     # fixed64
+            results.append((fn, wt, raw[i:i+8], fn in known_numbers)); i += 8
+        elif wt == 5:                     # fixed32
+            results.append((fn, wt, raw[i:i+4], fn in known_numbers)); i += 4
+        else:
+            break
+    return results
+
+
+def _looks_like_date(b: bytes) -> bool:
+    s = b.decode("utf-8", errors="ignore")
+    return (
+        len(s) in (10,) and s[4] == "-" and s[7] == "-" and
+        s.replace("-", "").isdigit()
+    )
+
+
+def _decode_nested(chunk: bytes, indent: str = "    ") -> None:
+    """Try to decode chunk as submessage; print dates/strings if found."""
+    for (fn, wt, payload, _) in _walk_wire(chunk, set()):
+        if wt == 2 and isinstance(payload, bytes):
+            if _looks_like_date(payload):
+                sys.stderr.write(f"{indent}inner field={fn} DATE={payload.decode()!r}\n")
+            else:
+                try:
+                    sys.stderr.write(f"{indent}inner field={fn} str={payload.decode()!r}\n")
+                except UnicodeDecodeError:
+                    sys.stderr.write(f"{indent}inner field={fn} nested_hex={payload.hex()}\n")
+        else:
+            sys.stderr.write(f"{indent}inner field={fn} wt={wt} value={payload!r}\n")
+
+
 def probe_endpoint(sdk, endpoint_id: str) -> int:
-    """Fetch an existing endpoint and dump its MetrikaSource raw bytes.
+    """Fetch a Metrika-source endpoint and reveal the period field tag.
 
-    Use this when our best-guess field tag for `period` is wrong — create a
-    Metrika endpoint in the UI with dates filled in, then run:
-
-        PROBE_ENDPOINT_ID=<id> python3 scripts/setup_transfer.py
-
-    The script prints a hex dump of the metrika_source payload and flags
-    any unknown field so you can see the real tag number.
+    Use this after creating a source endpoint in the UI with the period
+    filled in.  The script dumps every field in the received wire bytes,
+    marks which are unknown to our public proto, and tries to decode
+    sub-messages looking for date-shaped strings.
     """
     from yandex.cloud.datatransfer.v1.endpoint_service_pb2 import GetEndpointRequest
     endpoint_stub = sdk.client(EndpointServiceStub)
     ep = endpoint_stub.Get(GetEndpointRequest(endpoint_id=endpoint_id))
     if not ep.settings.HasField("metrika_source"):
         sys.exit(f"endpoint {endpoint_id} is not a Metrika source")
-    ms = ep.settings.metrika_source
-    raw = ms.SerializeToString()
-    known = set(f.number for f in ms.DESCRIPTOR.fields_by_name.values())
-    log(f"endpoint {endpoint_id} — known field numbers in proto: {sorted(known)}")
-    log(f"metrika_source raw bytes ({len(raw)}): {raw.hex()}")
 
-    # Walk the wire and identify unknown fields
-    i = 0
-    while i < len(raw):
-        key, n = _read_varint(raw, i); i += n
-        fn, wt = key >> 3, key & 7
-        length = None
-        if wt == 2:
-            length, n = _read_varint(raw, i); i += n
-            chunk = raw[i:i+length]; i += length
-        elif wt == 0:
-            _, n = _read_varint(raw, i); i += n
-            chunk = b""
+    ms  = ep.settings.metrika_source
+    raw = ms.SerializeToString()
+    known = {f.number for f in ms.DESCRIPTOR.fields_by_name.values()}
+
+    log(f"endpoint {endpoint_id}")
+    log(f"  proto-known numbers on MetrikaSource: {sorted(known)}")
+    log(f"  raw bytes ({len(raw)}): {raw.hex()}")
+    log("")
+
+    for (fn, wt, payload, is_known) in _walk_wire(raw, known):
+        marker = "known" if is_known else "UNKNOWN"
+        if wt == 2 and isinstance(payload, bytes):
+            log(f"  field={fn} wt={wt} len={len(payload)} [{marker}]  hex={payload.hex()}")
+            _decode_nested(payload)
         else:
-            log(f"  field={fn} wire_type={wt} (unsupported skip)")
-            break
-        marker = "UNKNOWN" if fn not in known else "known"
-        log(f"  field={fn} wire_type={wt} len={length} [{marker}] hex={chunk.hex()}")
+            log(f"  field={fn} wt={wt} value={payload!r} [{marker}]")
+
+    log("")
+    log("→ Look for an UNKNOWN field whose submessage contains DATE=... lines.")
+    log("  That field number is your PERIOD_FIELD_NUMBER.")
+    log("  Inner tags for from/to are usually 1/2 unless shown otherwise.")
     return 0
 
 
