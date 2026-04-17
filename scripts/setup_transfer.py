@@ -424,26 +424,34 @@ def main() -> int:
             probe_transfer(sdk, probe_tr)
         return 0
 
+    # Required always
     env = _require_env(
         "YC_TOKEN", "FOLDER_ID",
-        "COUNTER_ID", "METRIKA_TOKEN", "PERIOD_FROM", "PERIOD_TO",
         "CH_CLUSTER_ID", "CH_DB", "CH_USER", "CH_PASSWORD",
         "SOURCE_NAME", "TARGET_NAME", "TRANSFER_NAME",
     )
+    # Required only when we auto-create source
+    existing_src = os.environ.get("EXISTING_SOURCE_ID")
+    if not existing_src:
+        env.update(_require_env(
+            "COUNTER_ID", "METRIKA_TOKEN", "PERIOD_FROM", "PERIOD_TO",
+        ))
 
     sdk = yandexcloud.SDK(iam_token=env["YC_TOKEN"])
     endpoint_stub = sdk.client(EndpointServiceStub)
     transfer_stub = sdk.client(TransferServiceStub)
     op_stub       = sdk.client(OperationServiceStub)
 
-    src_id = create_metrika_source(endpoint_stub, op_stub, env)
-    log(f"source endpoint id = {src_id}")
+    if existing_src:
+        log(f"using existing source endpoint id = {existing_src}")
+        src_id = existing_src
+    else:
+        src_id = create_metrika_source(endpoint_stub, op_stub, env)
+        log(f"source endpoint id = {src_id}")
 
     tgt_id = create_clickhouse_target(endpoint_stub, op_stub, env)
     log(f"target endpoint id = {tgt_id}")
 
-    # Try transfer creation; fall back to UI instructions on the known
-    # "period setting required" failure.
     try:
         transfer_id = create_and_activate_transfer(
             transfer_stub, op_stub, env, src_id, tgt_id

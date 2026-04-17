@@ -473,28 +473,42 @@ terraform destroy
 
 ---
 
-## Известное ограничение: Data Transfer period настраивается в UI
+## Известное ограничение: Metrika source endpoint создаётся руками
 
-Поле `period` (диапазон дат для snapshot-загрузки Metrika) **не экспонировано в публичном API YC**:
+Поле `period` (диапазон дат для snapshot-загрузки Metrika) полностью **write-only в публичном API YC**:
 - Нет в [публичном proto](https://github.com/yandex-cloud/cloudapi/blob/master/yandex/cloud/datatransfer/v1/endpoint/metrika.proto) (`MetrikaSource`/`MetrikaStream` содержат только `counter_ids`, `token`, `streams: {type, columns}`)
-- Нет в Python SDK `yandexcloud` (SDK генерируется из того же proto)
-- Нет в [Terraform-провайдере](https://github.com/yandex-cloud/terraform-provider-yandex/blob/master/yandex/resource_yandex_datatransfer_endpoint.go) (schema `metrika_source` не содержит date-fields)
-- В `yc` CLI нет подкоманды `create metrika-source` вообще (есть только pg/mysql/mongo/ch/yds)
+- Нет в Python SDK `yandexcloud`, Terraform-провайдере, `yc` CLI
+- `Get` не отдаёт его ни с endpoint'а, ни с трансфера — проверено через wire-дамп (`PROBE_ENDPOINT_ID` / `PROBE_TRANSFER_ID`)
 
-При этом backend при `CreateTransfer` требует: `current metrica source config not suitable for snapshot: period setting required`. UI решает это через приватный API-эндпоинт.
+При этом `CreateTransfer` в SNAPSHOT-режиме требует period на source. UI сохраняет его через приватный API.
 
-**Практика**: `scripts/setup_transfer.py` создаёт оба endpoint'а (Metrika source + ClickHouse target) через SDK/gRPC, затем ловит эту ошибку на `CreateTransfer` и печатает пошаговую инструкцию для UI:
+**Рабочая схема** (~30 секунд ручного в UI на весь цикл):
 
+1. Один раз создай Metrika-source endpoint в UI Console:
+   - https://console.yandex.cloud/folders/{folder_id}/data-transfer/endpoints → **Создать endpoint**
+   - Направление: **Источник**, База: **Metrica**
+   - Счётчик: `{counter_id}`
+   - Токен: OAuth-токен Метрики
+   - **Период выгрузки данных: Начало `{PERIOD_FROM}`, Конец `{PERIOD_TO}`**
+   - Stream: **Визиты** + нужные поля
+   - Запомни id (вида `dte...`)
+
+2. Запусти остальное:
+   ```bash
+   EXISTING_SOURCE_ID=<dte...> ./scripts/transfer.sh
+   ```
+   Скрипт создаст target endpoint, создаст transfer поверх твоего UI-source, активирует, опросит статус до DONE.
+
+3. После DONE:
+   ```bash
+   ./scripts/smoke.sh
+   ```
+
+**Важно для `cleanup.sh`**: передавай `KEEP_SOURCE_ID=<id>`, чтобы UI-source пережил очистку:
+
+```bash
+KEEP_SOURCE_ID=<dte...> ./scripts/cleanup.sh
 ```
-1. https://console.yandex.cloud/folders/{folder_id}/data-transfer/transfers → Create transfer
-2. Source endpoint: pick existing → id=<вывод скрипта>
-3. Target endpoint: pick existing → id=<вывод скрипта>
-4. Type: Snapshot
-5. Period: <PERIOD_FROM> → <PERIOD_TO>
-6. Activate
-```
-
-После этого `./scripts/smoke.sh` доделает пайплайн (invoke функции + проверка таблиц).
 
 ---
 

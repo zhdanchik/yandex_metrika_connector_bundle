@@ -50,11 +50,19 @@ TARGET_NAME="${PREFIX}-ch-target"
 TRANSFER_NAME="${PREFIX}-metrika-to-ch"
 
 hdr "Removing any pre-existing transfer/endpoints with these names"
+# When EXISTING_SOURCE_ID is set, preserve that one endpoint — the user
+# created it in the UI so the 'period' field (not exposed on public API)
+# is stored in the backend.  Recreating it via SDK would lose period.
+KEEP_ID="${EXISTING_SOURCE_ID:-}"
 for r in transfer endpoint; do
   yc datatransfer "$r" list --folder-id "$FOLDER_ID" --format json 2>/dev/null \
     | jq -r --arg p "$PREFIX" '.[] | select(.name|startswith($p)) | .id' \
     | while read -r id; do
         [ -z "$id" ] && continue
+        if [ "$id" = "$KEEP_ID" ]; then
+          log "keeping $r $id (EXISTING_SOURCE_ID)"
+          continue
+        fi
         log "deleting $r $id"
         if [ "$r" = "transfer" ]; then
           yc datatransfer transfer deactivate "$id" 2>/dev/null || true
@@ -71,6 +79,8 @@ export YC_TOKEN FOLDER_ID COUNTER_ID METRIKA_TOKEN
 export PERIOD_FROM PERIOD_TO
 export CH_CLUSTER_ID CH_DB CH_USER CH_PASSWORD
 export SOURCE_NAME TARGET_NAME TRANSFER_NAME
+export EXISTING_SOURCE_ID="${EXISTING_SOURCE_ID:-}"
+[ -n "$EXISTING_SOURCE_ID" ] && log "using existing source id=$EXISTING_SOURCE_ID (skip source create)"
 
 TRANSFER_ID="$(python3 "$SCRIPT_DIR/setup_transfer.py" || true)"
 if [ -z "$TRANSFER_ID" ]; then

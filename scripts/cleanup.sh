@@ -85,10 +85,17 @@ while IFS=$'\t' read -r id name status; do
   yc_folder datatransfer transfer delete "$id" || warn "  failed: $id"
 done <<<"$TRANSFERS"
 
-# Endpoints
+# Endpoints.  KEEP_SOURCE_ID lets the user preserve a UI-created Metrika
+# source endpoint (where the write-only `period` field lives) across
+# cleanup cycles so they don't have to recreate it every time.
+KEEP_SOURCE_ID="${KEEP_SOURCE_ID:-}"
 hdr "Deleting transfer endpoints"
 while IFS=$'\t' read -r id name; do
   [ -z "$id" ] && continue
+  if [ "$id" = "$KEEP_SOURCE_ID" ]; then
+    log "preserving $name ($id) — KEEP_SOURCE_ID"
+    continue
+  fi
   log "endpoint $name ($id)"
   yc_folder datatransfer endpoint delete "$id" || warn "  failed: $id"
 done <<<"$ENDPOINTS"
