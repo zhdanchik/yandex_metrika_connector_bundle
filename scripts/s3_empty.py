@@ -121,6 +121,41 @@ def list_objects(bucket: str, ak: str, sk: str):
             marker["version-id-marker"] = next_ver
 
 
+def list_multipart_uploads(bucket: str, ak: str, sk: str):
+    """Yield (key, upload_id) for every in-progress multipart upload.
+
+    Regular ListObjectVersions doesn't see these, but their stored parts
+    count toward 'bucket not empty'.
+    """
+    marker: dict = {}
+    while True:
+        status, body = _request("GET", bucket, "/",
+                                {"uploads": "", **marker}, b"", ak, sk)
+        if status != 200:
+            raise RuntimeError(f"list uploads failed: {status} {body[:500]!r}")
+        root = ET.fromstring(body)
+        for el in root.findall(f"{NS}Upload"):
+            key = el.findtext(f"{NS}Key") or ""
+            uid = el.findtext(f"{NS}UploadId") or ""
+            if key and uid:
+                yield key, uid
+        if (root.findtext(f"{NS}IsTruncated") or "false").lower() != "true":
+            return
+        next_key = root.findtext(f"{NS}NextKeyMarker") or ""
+        next_uid = root.findtext(f"{NS}NextUploadIdMarker") or ""
+        marker = {"key-marker": next_key}
+        if next_uid:
+            marker["upload-id-marker"] = next_uid
+
+
+def abort_multipart(bucket: str, key: str, upload_id: str,
+                    ak: str, sk: str) -> None:
+    status, body = _request("DELETE", bucket, "/" + urllib.parse.quote(key),
+                            {"uploadId": upload_id}, b"", ak, sk)
+    if status not in (200, 204):
+        raise RuntimeError(f"abort {key}@{upload_id}: {status} {body[:500]!r}")
+
+
 def delete_object(bucket: str, key: str, version: str | None,
                   ak: str, sk: str) -> None:
     query = {"versionId": version} if version else {}
@@ -148,6 +183,13 @@ def main() -> int:
         print(f"  deleted {key}" + (f"@{ver}" if ver else ""), file=sys.stderr)
         count += 1
     print(f"emptied {count} object(s) from {bucket}", file=sys.stderr)
+
+    aborted = 0
+    for key, uid in list_multipart_uploads(bucket, ak, sk):
+        abort_multipart(bucket, key, uid, ak, sk)
+        print(f"  aborted multipart {key}@{uid}", file=sys.stderr)
+        aborted += 1
+    print(f"aborted {aborted} in-progress multipart upload(s)", file=sys.stderr)
     return 0
 
 
