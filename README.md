@@ -18,7 +18,7 @@ functions/
   transform/
     handler.py               # Точка входа Yandex Cloud Function
     requirements.txt         # Нет сторонних зависимостей (ClickHouse — через HTTP API)
-    sql/                     # Копии SQL-файлов, входящие в zip-архив функции
+    sql/                     # Копии SQL-файлов (синхронизируются scripts/prepare.sh)
 
 tests/
   attribution_math.py        # Python-эталон: derive_source_code, build_chains, 4 модели
@@ -27,7 +27,8 @@ tests/
   test_attribution_math.py   # 52 юнит-теста (без ClickHouse)
   test_integration.py        # Интеграционные тесты (требуют ClickHouse)
 
-terraform/                   # Инфраструктурный слой (в разработке)
+scripts/                     # Автоматизация развёртывания (cleanup / deploy / transfer / smoke / e2e)
+terraform/                   # Инфраструктурный слой (protected end-to-end)
 pyproject.toml               # pytest-конфигурация
 ```
 
@@ -235,6 +236,9 @@ pytest --integration tests/test_integration.py -v
 | Terraform | ≥ 1.5 |
 | Yandex Cloud CLI (`yc`) | последняя |
 | `clickhouse-client` | ≥ 21.1 (для применения DDL-схемы) |
+| `jq` | для парсинга JSON-ответов yc |
+| `python3` | для парсинга HCL и escape'а паролей в XML |
+| `curl` | для скачивания CA и HTTPS-запросов к ClickHouse в smoke-тесте |
 
 Аутентификация Terraform выполняется через `yc iam create-token` или сервисный аккаунт с ключом (см. [документацию провайдера](https://terraform-provider.yandexcloud.net/)).
 
@@ -317,71 +321,54 @@ metrika_oauth_token  = "y0_AgAAAA..."
 
 ---
 
-### Шаг 4 — Запустить Terraform
+### Шаг 4 — Запустить развёртывание
+
+Проще всего — одна команда полного e2e (cleanup → apply → transfer → smoke):
 
 ```bash
-cd terraform/
-
-# Инициализация провайдеров и модулей
-terraform init
-
-# Предварительный просмотр изменений (без применения)
-terraform plan -out=tfplan
-
-# Применение (~15 мин: ClickHouse кластер поднимается 10-15 мин)
-terraform apply tfplan
+ASSUME_YES=1 ./scripts/e2e.sh
 ```
 
-После успешного apply Terraform выведет:
+Или по шагам, если хочется контроля на каждом этапе:
+
+```bash
+./scripts/cleanup.sh   # удалить все ресурсы проекта в folder_id (idempotent)
+./scripts/deploy.sh    # preflight + terraform init + plan + apply
+./scripts/transfer.sh  # создать и активировать Data Transfer через yc CLI
+./scripts/smoke.sh     # invoke функции + проверка всех таблиц + топ-5 каналов
+```
+
+Все скрипты читают `terraform/terraform.tfvars` и `terraform output`. Секреты никогда не попадают в аргументы команд (т.е. не видны в `ps aux`): они идут через XML-конфиг ClickHouse с `chmod 600`, HTTPS-заголовки, или временные файлы в `mktemp -d $(chmod 700)`.
+
+После `deploy.sh` Terraform выведет:
 
 ```
-clickhouse_host      = "rc1a-xxxx.mdb.yandexcloud.net"
+clickhouse_host       = "rc1a-xxxx.mdb.yandexcloud.net"
 clickhouse_cluster_id = "c9q..."
-function_id          = "d4e..."
-lockbox_secret_id    = "e6q..."
-transfer_id          = "dtd..."
-trigger_id           = "..."
+clickhouse_db_name    = "metrika"
+clickhouse_db_user    = "analyst"
+function_id           = "d4e..."
+lockbox_secret_id     = "e6q..."
+trigger_id            = "..."
 ```
 
 ---
 
-### Шаг 5 — Запустить Data Transfer
+### Что делают скрипты
 
-Data Transfer создаётся в статусе `CREATED`, не `RUNNING`. Запустите трансфер вручную:
+| Скрипт | Действия |
+|--------|----------|
+| `scripts/prepare.sh` | Проверяет `yc`/`terraform`/`clickhouse-client`/`jq`, валидирует `terraform.tfvars` (нет placeholder'ов), скачивает Yandex CA → `functions/transform/CA.pem`, синхронизирует `sql/*.sql` в бандл функции |
+| `scripts/cleanup.sh` | По префиксу имени (`metrika-attribution-*`) удаляет: триггеры, функции, Data Transfer'ы + endpoint'ы, MDB-кластеры (снимает `deletion_protection`), Lockbox-секреты, Object Storage бакет, сервисные аккаунты; чистит локальный `terraform.tfstate` |
+| `scripts/deploy.sh` | Вызывает `prepare.sh`, затем `terraform init → plan → apply` |
+| `scripts/transfer.sh` | Забирает секреты из Lockbox, создаёт endpoint-metrika-source + endpoint-clickhouse-target + transfer (SNAPSHOT_ONLY с `period`), активирует, поллит статус до DONE/ERROR |
+| `scripts/smoke.sh` | Invoke функции + `curl --cacert CA.pem https://…:8443` к ClickHouse, проверяет `visits_*` + `attribution_results`, печатает топ-5 каналов |
+| `scripts/e2e.sh` | Оркестратор: последовательно вызывает cleanup → deploy → transfer → smoke |
 
-```bash
-yc datatransfer transfer activate <transfer_id>
-```
-
-Или через консоль YC: **Data Transfer → Трансферы → Активировать**.
-
-Начальная загрузка исторических данных займёт несколько минут–часов в зависимости от объёма.
-
----
-
-### Шаг 6 — Проверить пайплайн
-
-**Проверить, что данные попали в `visits_raw`:**
-
-```sql
-SELECT count() FROM visits_raw;
-```
-
-**Запустить функцию вручную** (без ожидания расписания):
-
-```bash
-yc serverless function invoke <function_id> \
-  --data '{}'
-```
-
-**Проверить результаты атрибуции:**
-
-```sql
-SELECT attribution_type, source_code, sum(conversions)
-FROM attribution_results
-GROUP BY attribution_type, source_code
-ORDER BY attribution_type, sum(conversions) DESC;
-```
+Переменные окружения:
+- `ASSUME_YES=1` — пропустить все интерактивные подтверждения
+- `PERIOD_FROM` / `PERIOD_TO` (YYYY-MM-DD) — диапазон дат снапшота Metrika (по умолчанию последние 30 дней)
+- `FOLDER_ID`, `PREFIX`, `BUCKET_NAME` — переопределить значения из tfvars в cleanup.sh
 
 ---
 
@@ -455,6 +442,19 @@ terraform destroy
 ```
 
 > Если `deletion_protection = true` на ClickHouse кластере — сначала установите его в `false`.
+
+---
+
+## Безопасность
+
+Все чувствительные точки задокументированы явно:
+
+- **Секреты хранятся в Lockbox.** `clickhouse_password` и `metrika_oauth_token` попадают в Lockbox из `terraform.tfvars` (или `TF_VAR_*`) и извлекаются функцией/скриптами через IAM-токен. В env-переменных функции их нет.
+- **TLS обязателен.** Функция использует HTTPS (`8443`) с проверкой по Yandex CA (`functions/transform/CA.pem`, скачивается `scripts/prepare.sh`). DDL-провизионер `null_resource.schema` использует `verificationMode=strict` с этим же CA (раньше был `mode=none` — исправлено).
+- **Пароль не в cmdline.** ClickHouse DDL-провизионер получает пароль через временный XML-конфиг с `chmod 600` — не виден в `ps aux`. Smoke-скрипт отправляет пароль в HTTP-заголовке `X-ClickHouse-Key` поверх TLS, а не через `--password`.
+- **Секреты из tfvars никогда не в git.** `.gitignore` исключает `terraform.tfvars`, `*.tfstate*`, `CA.pem`.
+- **Сеть.** По умолчанию MDB-кластер имеет публичный IP (`assign_public_ip = true`), чтобы локальный провизионер мог применить DDL. Для prod — установите `false`, а DDL прогоните из внутренней сети (Compute/Jump-host или Cloud Functions). Также рекомендуется указать `security_group_ids` в `module.clickhouse` с whitelist по IP.
+- **`CLICKHOUSE_TLS=0` разрешён, но `prepare.sh` явно warn'ит.** Для тестовых окружений с plaintext.
 
 ---
 

@@ -77,3 +77,9 @@ variable "security_group_ids" {
   type        = list(string)
   default     = []
 }
+
+variable "ca_cert_path" {
+  description = "Абсолютный путь к Yandex CA-сертификату для DDL-провизионера (см. scripts/prepare.sh)"
+  type        = string
+  default     = "../functions/transform/CA.pem"
+}

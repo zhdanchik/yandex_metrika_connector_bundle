@@ -59,6 +59,7 @@ module "clickhouse" {
   subnet_id           = var.subnet_id
   zone                = var.zone
   clickhouse_password = var.clickhouse_password
+  ca_cert_path        = var.ca_cert_path
 }
 
 # ══════════════════════════════════════════════════════════════
