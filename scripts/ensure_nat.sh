@@ -29,11 +29,26 @@ GW_ID="$(yc vpc gateway list --folder-id "$FOLDER_ID" --format json \
   | jq -r --arg n "$GW_NAME" '.[] | select(.name==$n) | .id')"
 if [ -z "$GW_ID" ]; then
   log "creating egress gateway $GW_NAME"
-  GW_ID="$(yc vpc gateway create \
-    --folder-id "$FOLDER_ID" \
-    --name "$GW_NAME" \
-    --shared-egress-gateway \
-    --format json | jq -r .id)"
+  # yc CLI versions have used either no flag (default = shared egress),
+  # --shared-egress, or --shared-egress-gateway.  Try in that order.
+  for FLAG_SET in \
+      "" \
+      "--shared-egress" \
+      "--shared-egress-gateway"; do
+    # shellcheck disable=SC2086
+    if GW_JSON=$(yc vpc gateway create \
+                  --folder-id "$FOLDER_ID" \
+                  --name "$GW_NAME" \
+                  $FLAG_SET \
+                  --format json 2>&1); then
+      GW_ID="$(echo "$GW_JSON" | jq -r .id)"
+      [ -n "$GW_ID" ] && [ "$GW_ID" != "null" ] && break
+    fi
+    log "  flag variant ${FLAG_SET:-<none>} failed, trying next"
+  done
+  if [ -z "$GW_ID" ] || [ "$GW_ID" = "null" ]; then
+    die "could not create egress gateway — run 'yc vpc gateway create --help' and tell me the correct flag"
+  fi
 fi
 log "  gateway id = $GW_ID"
 
