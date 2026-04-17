@@ -171,31 +171,67 @@ if [ -n "$BUCKET_NAME" ]; then
   hdr "Deleting Object Storage bucket"
   log "checking bucket $BUCKET_NAME"
   if yc storage bucket get --name "$BUCKET_NAME" >/dev/null 2>&1; then
+    # Primary choice: the dedicated storage SA (created by tf module.function).
+    # Fallback: any SA in the folder matching our prefix — we grant it
+    # storage.admin temporarily, since in a partial-cleanup state the
+    # storage SA may already be gone while its bucket lingers.
+    # Override: STORAGE_SA_ID=<id> ./scripts/cleanup.sh
     STORAGE_SA_NAME="${PREFIX}-transform-storage-sa"
-    STORAGE_SA_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json \
-      | jq -r --arg n "$STORAGE_SA_NAME" '.[] | select(.name==$n) | .id')"
+    STORAGE_SA_ID="${STORAGE_SA_ID:-$(yc iam service-account list --folder-id "$FOLDER_ID" --format json \
+      | jq -r --arg n "$STORAGE_SA_NAME" '.[] | select(.name==$n) | .id')}"
 
+    ROLE_GRANTED_TEMP=0
     if [ -z "$STORAGE_SA_ID" ]; then
-      warn "  storage SA $STORAGE_SA_NAME not found — can't empty bucket"
-      warn "  aborting bucket delete (manual cleanup required)"
-    else
-      log "minting temporary static access key for SA $STORAGE_SA_ID"
-      KEY_JSON="$(yc iam access-key create --service-account-id "$STORAGE_SA_ID" --format json)"
-      export AWS_ACCESS_KEY_ID="$(echo "$KEY_JSON"  | jq -r '.access_key.key_id')"
-      export AWS_SECRET_ACCESS_KEY="$(echo "$KEY_JSON" | jq -r '.secret')"
-
-      log "emptying bucket $BUCKET_NAME via stdlib S3 client"
-      if python3 "$SCRIPT_DIR/s3_empty.py" "$BUCKET_NAME"; then
-        log "deleting bucket"
-        yc storage bucket delete --name "$BUCKET_NAME" || warn "  delete failed"
-      else
-        warn "  failed to empty bucket — leaving it alone"
+      warn "  storage SA $STORAGE_SA_NAME not found — looking for a fallback SA"
+      STORAGE_SA_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json \
+        | jq -r --arg p "$PREFIX" '.[] | select(.name|startswith($p)) | .id' | head -1)"
+      if [ -z "$STORAGE_SA_ID" ]; then
+        warn "  no project-prefixed SA found — creating one just to empty the bucket"
+        STORAGE_SA_ID="$(yc iam service-account create \
+          --name "${PREFIX}-cleanup-tmp-sa" --folder-id "$FOLDER_ID" --format json \
+          | jq -r '.id')"
+        TEMP_SA_ID="$STORAGE_SA_ID"   # remember to delete after
       fi
+      log "  fallback SA = $STORAGE_SA_ID; granting storage.admin temporarily"
+      yc resource-manager folder add-access-binding \
+        --id "$FOLDER_ID" \
+        --role storage.admin \
+        --subject "serviceAccount:$STORAGE_SA_ID" >/dev/null \
+        && ROLE_GRANTED_TEMP=1 \
+        || warn "  role grant may have failed (possibly already bound) — continuing"
+      # Role bindings take a few seconds to propagate for a fresh SA.
+      sleep 5
+    fi
 
-      log "revoking temporary access key $AWS_ACCESS_KEY_ID"
-      yc iam access-key delete --id "$AWS_ACCESS_KEY_ID" >/dev/null \
-        || warn "  failed to delete temp key (will be removed with SA)"
-      unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+    log "minting temporary static access key for SA $STORAGE_SA_ID"
+    KEY_JSON="$(yc iam access-key create --service-account-id "$STORAGE_SA_ID" --format json)"
+    export AWS_ACCESS_KEY_ID="$(echo "$KEY_JSON"  | jq -r '.access_key.key_id')"
+    export AWS_SECRET_ACCESS_KEY="$(echo "$KEY_JSON" | jq -r '.secret')"
+
+    log "emptying bucket $BUCKET_NAME via stdlib S3 client"
+    if python3 "$SCRIPT_DIR/s3_empty.py" "$BUCKET_NAME"; then
+      log "deleting bucket"
+      yc storage bucket delete --name "$BUCKET_NAME" || warn "  delete failed"
+    else
+      warn "  failed to empty bucket — leaving it alone"
+    fi
+
+    log "revoking temporary access key $AWS_ACCESS_KEY_ID"
+    yc iam access-key delete --id "$AWS_ACCESS_KEY_ID" >/dev/null \
+      || warn "  failed to delete temp key (will be removed with SA)"
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+    if [ "$ROLE_GRANTED_TEMP" = "1" ]; then
+      log "revoking temporary storage.admin from $STORAGE_SA_ID"
+      yc resource-manager folder remove-access-binding \
+        --id "$FOLDER_ID" \
+        --role storage.admin \
+        --subject "serviceAccount:$STORAGE_SA_ID" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${TEMP_SA_ID:-}" ]; then
+      log "deleting one-shot cleanup SA $TEMP_SA_ID"
+      yc iam service-account delete --id "$TEMP_SA_ID" >/dev/null 2>&1 || true
+      unset TEMP_SA_ID
     fi
   else
     log "bucket $BUCKET_NAME doesn't exist, skipping"
