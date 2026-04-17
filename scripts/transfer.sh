@@ -81,41 +81,8 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 chmod 700 "$TMP_DIR"
 
-SRC_SPEC="$TMP_DIR/source.yaml"
 TGT_SPEC="$TMP_DIR/target.yaml"
 umask 077
-
-cat > "$SRC_SPEC" <<EOF
-counter_ids: [$COUNTER_ID]
-token:
-  raw: "$METRIKA_TOKEN"
-streams:
-  - type: METRIKA_STREAM_TYPE_VISITS
-    columns:
-      - CounterUserIDHash
-      - UTCStartTime
-      - Duration
-      - TrafficSource.Model
-      - TrafficSource.ID
-      - TrafficSource.StartTime
-      - TrafficSource.SearchEngineID
-      - TrafficSource.AdvEngineID
-      - TrafficSource.SocialSourceNetworkID
-      - TrafficSource.RecommendationSystemID
-      - TrafficSource.MessengerID
-      - TrafficSource.ClickBannerID
-      - TrafficSource.ClickTargetType
-      - Goals.ID
-      - Goals.Serial
-      - Goals.EventTime
-      - Goals.Price
-      - Goals.Currency
-      - EPurchase.ID
-      - EPurchase.Revenue
-period:
-  from: "${PERIOD_FROM}T00:00:00Z"
-  to:   "${PERIOD_TO}T00:00:00Z"
-EOF
 
 cat > "$TGT_SPEC" <<EOF
 connection:
@@ -132,13 +99,23 @@ cleanup_policy: CLICKHOUSE_CLEANUP_POLICY_DISABLED
 EOF
 
 hdr "Creating endpoints"
-log "  source: Yandex Metrika"
-SRC_ID="$(yc datatransfer endpoint create metrika-source \
-  --folder-id "$FOLDER_ID" --name "$SOURCE_NAME" \
-  --settings-from-file "$SRC_SPEC" --format json | jq -r .id)"
+# Metrika source: yc CLI doesn't support create metrika-source, so we hit
+# the REST API directly from scripts/create_metrika_endpoint.py.  Secrets
+# are passed via env (never cmdline / ps aux).
+log "  source: Yandex Metrika (via REST API)"
+SRC_ID="$(
+  FOLDER_ID="$FOLDER_ID" \
+  ENDPOINT_NAME="$SOURCE_NAME" \
+  COUNTER_ID="$COUNTER_ID" \
+  METRIKA_TOKEN="$METRIKA_TOKEN" \
+  PERIOD_FROM="$PERIOD_FROM" \
+  PERIOD_TO="$PERIOD_TO" \
+  python3 "$SCRIPT_DIR/create_metrika_endpoint.py"
+)"
+[ -n "$SRC_ID" ] || die "failed to create Metrika source endpoint"
 log "    id=$SRC_ID"
 
-log "  target: Managed ClickHouse"
+log "  target: Managed ClickHouse (via yc CLI)"
 TGT_ID="$(yc datatransfer endpoint create clickhouse-target \
   --folder-id "$FOLDER_ID" --name "$TARGET_NAME" \
   --settings-from-file "$TGT_SPEC" --format json | jq -r .id)"
