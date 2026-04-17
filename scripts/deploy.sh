@@ -35,6 +35,11 @@ refresh_yc_token
 terraform -chdir="$TF_DIR" apply -input=false tfplan
 rm -f "$TF_DIR/tfplan"
 
+# Cloud Function lives inside the subnet via connectivity block, and
+# needs egress to Lockbox / the public internet for secrets + CA
+# bootstrap.  Ensure the subnet has a Cloud NAT gateway attached.
+"$SCRIPT_DIR/ensure_nat.sh"
+
 hdr "Outputs"
 terraform -chdir="$TF_DIR" output
 
