@@ -19,7 +19,15 @@ require_bin terraform yc jq python3 curl
 if ! command -v clickhouse-client >/dev/null 2>&1 && ! command -v clickhouse >/dev/null 2>&1; then
   die "need clickhouse-client or the single-binary 'clickhouse' (for DDL provisioner)"
 fi
-ok "  all binaries present"
+
+# yandexcloud SDK is needed by scripts/create_metrika_endpoint.py.
+# (Metrika Data Transfer endpoint is gRPC-only; yc CLI doesn't cover it.)
+if ! python3 -c 'import yandexcloud, yandex.cloud.datatransfer.v1.endpoint_service_pb2' 2>/dev/null; then
+  warn "  python module 'yandexcloud' not found — required by scripts/transfer.sh"
+  warn "  install once:  pip install --user yandexcloud"
+  die "aborting so you can install yandexcloud before continuing"
+fi
+ok "  all binaries + Python SDK present"
 
 # 2. tfvars
 log "checking $TFVARS"

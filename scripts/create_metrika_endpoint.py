@@ -1,34 +1,53 @@
 #!/usr/bin/env python3
 """
-Create a Yandex Data Transfer Metrika-source endpoint via REST API.
+Create a Yandex Data Transfer Metrika-source endpoint.
 
-The `yc` CLI only supports postgres/mysql/mongo/clickhouse/yds endpoint
-types (not metrika), so we talk to the API directly.
+YC Data Transfer does not expose a REST gateway — only gRPC — and the
+`yc` CLI only implements pg/mysql/mongo/ch/yds endpoint types.  We use
+the official yandexcloud Python SDK (gRPC client) instead.
+
+Install once:
+    pip install --user yandexcloud
 
 Reads from env:
     YC_TOKEN       IAM token (exported by scripts/lib.sh refresh_yc_token)
     FOLDER_ID      Yandex Cloud folder ID
     ENDPOINT_NAME  Name for the endpoint
     COUNTER_ID     Yandex Metrika counter ID
-    METRIKA_TOKEN  OAuth token (sensitive — never echoed)
+    METRIKA_TOKEN  OAuth token for Metrika (sensitive — never printed)
     PERIOD_FROM    YYYY-MM-DD
     PERIOD_TO      YYYY-MM-DD
 
-Prints the created endpoint ID on stdout.  Errors go to stderr + exit 1.
+Prints the created endpoint ID on stdout.
 """
 
-import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
 
-API = "https://datatransfer.api.cloud.yandex.net/data-transfer/v1"
-OP_API = "https://operation.api.cloud.yandex.net/operations"
+try:
+    import yandexcloud
+    from google.protobuf.json_format import ParseDict
+    from yandex.cloud.datatransfer.v1.endpoint_pb2 import EndpointSettings, Endpoint
+    from yandex.cloud.datatransfer.v1.endpoint_service_pb2 import (
+        CreateEndpointRequest,
+    )
+    from yandex.cloud.datatransfer.v1.endpoint_service_pb2_grpc import (
+        EndpointServiceStub,
+    )
+    from yandex.cloud.operation.operation_service_pb2_grpc import OperationServiceStub
+    from yandex.cloud.operation.operation_service_pb2 import GetOperationRequest
+except ImportError as exc:
+    sys.stderr.write(
+        f"missing Python dependency: {exc}\n"
+        "Install once with:  pip install --user yandexcloud\n"
+    )
+    sys.exit(2)
 
-# Columns we pull from Metrika.  Matches terraform/modules/transfer/main.tf
-# and scripts/transfer.sh YAML spec so the attribution pipeline still works.
+
+# Columns mirror terraform/modules/transfer/main.tf so the downstream
+# attribution pipeline (visits_prepared → visits_combined → results) still
+# finds the fields it expects.
 COLUMNS = [
     "CounterUserIDHash",
     "UTCStartTime",
@@ -53,79 +72,78 @@ COLUMNS = [
 ]
 
 
-def _req(method: str, url: str, body: dict | None = None) -> dict:
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {os.environ['YC_TOKEN']}")
-    if body is not None:
-        req.add_header("Content-Type", "application/json")
-    print(f"  [http] {method} {url}", file=sys.stderr)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        payload = e.read().decode("utf-8", errors="replace")
-        print(f"HTTP {e.code} on {method} {url}:\n{payload}", file=sys.stderr)
-        raise SystemExit(1)
-
-
-def _wait_operation(op: dict) -> dict:
-    """Block until the operation completes; return the final Operation object."""
-    op_id = op["id"]
-    while not op.get("done", False):
-        time.sleep(2)
-        op = _req("GET", f"{OP_API}/{op_id}")
-    if "error" in op:
-        print(f"operation error: {json.dumps(op['error'], indent=2)}", file=sys.stderr)
-        raise SystemExit(1)
-    return op
-
-
-def main() -> int:
+def _require_env() -> dict:
     required = [
         "YC_TOKEN", "FOLDER_ID", "ENDPOINT_NAME",
         "COUNTER_ID", "METRIKA_TOKEN", "PERIOD_FROM", "PERIOD_TO",
     ]
     missing = [v for v in required if not os.environ.get(v)]
     if missing:
-        print(f"missing env vars: {', '.join(missing)}", file=sys.stderr)
-        return 2
+        sys.exit(f"missing env vars: {', '.join(missing)}")
+    return {v: os.environ[v] for v in required}
 
-    body = {
-        "folderId": os.environ["FOLDER_ID"],
-        "name":     os.environ["ENDPOINT_NAME"],
-        "settings": {
-            "metrikaSource": {
-                "counterIds": [int(os.environ["COUNTER_ID"])],
-                "token": {"raw": os.environ["METRIKA_TOKEN"]},
-                "streams": [{
-                    "type":    "METRIKA_STREAM_TYPE_VISITS",
-                    "columns": COLUMNS,
-                }],
-                # DateRange is a pair of YYYY-MM-DD dates.  Metrika is
-                # snapshot-only, so every activation replays this window.
-                "period": {
-                    "from": os.environ["PERIOD_FROM"],
-                    "to":   os.environ["PERIOD_TO"],
-                },
+
+def _build_settings(env: dict) -> EndpointSettings:
+    """Compose MetrikaSource settings via JSON→protobuf parse.
+
+    We construct a plain dict with the same field names as the public
+    API reference, then let ParseDict do the work of mapping into the
+    proto message.  This insulates us from minor proto renames between
+    SDK versions.
+    """
+    payload = {
+        "metrikaSource": {
+            "counterIds": [int(env["COUNTER_ID"])],
+            "token": {"raw": env["METRIKA_TOKEN"]},
+            "streams": [{
+                "type":    "METRIKA_STREAM_TYPE_VISITS",
+                "columns": COLUMNS,
+            }],
+            # DateRange: two YYYY-MM-DD dates, inclusive.
+            "period": {
+                "from": env["PERIOD_FROM"],
+                "to":   env["PERIOD_TO"],
             },
         },
     }
+    settings = EndpointSettings()
+    ParseDict(payload, settings, ignore_unknown_fields=False)
+    return settings
 
-    op = _req("POST", f"{API}/endpoints", body)
-    endpoint_id = (op.get("metadata") or {}).get("endpointId") \
-                  or (op.get("response") or {}).get("id")
-    op = _wait_operation(op)
-    # Endpoint ID is in metadata regardless of done-state; response carries
-    # the full resource after completion.
-    if not endpoint_id:
-        endpoint_id = (op.get("response") or {}).get("id")
-    if not endpoint_id:
-        print(f"could not extract endpoint id from:\n{json.dumps(op, indent=2)}",
-              file=sys.stderr)
+
+def main() -> int:
+    env = _require_env()
+
+    sdk = yandexcloud.SDK(iam_token=env["YC_TOKEN"])
+    endpoint_stub = sdk.client(EndpointServiceStub)
+    op_stub = sdk.client(OperationServiceStub)
+
+    request = CreateEndpointRequest(
+        folder_id=env["FOLDER_ID"],
+        name=env["ENDPOINT_NAME"],
+        settings=_build_settings(env),
+    )
+
+    sys.stderr.write(f"  [grpc] EndpointService.Create name={env['ENDPOINT_NAME']}\n")
+    operation = endpoint_stub.Create(request)
+
+    # Poll operation to completion (usually < 5s for endpoint create).
+    while not operation.done:
+        time.sleep(2)
+        operation = op_stub.Get(GetOperationRequest(operation_id=operation.id))
+
+    if operation.HasField("error"):
+        sys.stderr.write(
+            f"operation error {operation.error.code}: {operation.error.message}\n"
+        )
         return 1
 
-    print(endpoint_id)
+    endpoint = Endpoint()
+    operation.response.Unpack(endpoint)
+    if not endpoint.id:
+        sys.stderr.write("unexpected: operation completed but no endpoint id\n")
+        return 1
+    print(endpoint.id)
     return 0
 
 

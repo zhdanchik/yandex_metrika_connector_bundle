@@ -238,6 +238,7 @@ pytest --integration tests/test_integration.py -v
 | `clickhouse-client` | ≥ 21.1 (для применения DDL-схемы) |
 | `jq` | для парсинга JSON-ответов yc |
 | `python3` | для парсинга HCL и escape'а паролей в XML |
+| `python3 -m pip install yandexcloud` | SDK для gRPC-вызовов Data Transfer (Metrika-source endpoint) |
 | `curl` | для скачивания CA и HTTPS-запросов к ClickHouse в smoke-тесте |
 
 Аутентификация Terraform выполняется через `yc iam create-token` или сервисный аккаунт с ключом (см. [документацию провайдера](https://terraform-provider.yandexcloud.net/)).
