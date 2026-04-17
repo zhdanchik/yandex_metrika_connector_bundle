@@ -49,10 +49,25 @@ ch() {
 }
 
 hdr "Pre-check: visits_raw"
-RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' | tr -d '\n')"
+RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' 2>/dev/null | tr -d '\n' || echo 0)"
 log "  visits_raw rows: $RAW_COUNT"
-if [ "$RAW_COUNT" -lt 1 ]; then
-  die "visits_raw is empty — run scripts/transfer.sh first or check Data Transfer status"
+if [ "${RAW_COUNT:-0}" -lt 1 ]; then
+  warn "visits_raw is missing or empty — listing all tables to diagnose…"
+  TABLES="$(ch "SELECT name FROM system.tables WHERE database='$CH_DB' AND name NOT LIKE '.%' FORMAT TSV")"
+  echo "$TABLES" | sed 's/^/    /'
+
+  # Pick a likely candidate — anything with 'visit' in the name.
+  CANDIDATE="$(echo "$TABLES" | grep -iE 'visit' | head -1 | tr -d '\n' || true)"
+  if [ -z "$CANDIDATE" ]; then
+    die "no table with 'visit' in the name found in $CH_DB — run transfer first"
+  fi
+
+  warn "found candidate: $CANDIDATE"
+  warn "creating view visits_raw → $CANDIDATE"
+  ch "CREATE OR REPLACE VIEW visits_raw AS SELECT * FROM $CANDIDATE" > /dev/null
+  RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' | tr -d '\n')"
+  log "  visits_raw (via view) rows: $RAW_COUNT"
+  [ "$RAW_COUNT" -gt 0 ] || die "view still empty — something else is off"
 fi
 
 hdr "Invoking Cloud Function"
