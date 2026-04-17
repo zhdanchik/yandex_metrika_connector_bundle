@@ -293,7 +293,7 @@ pip install yandexcloud
 Кластер ClickHouse создаётся в приватной подсети. Cloud Function подключается к той же сети через `connectivity.network_id`. Убедитесь, что:
 
 - VPC и подсеть созданы в нужном каталоге
-- На подсеть настроена таблица маршрутизации (NAT-инстанс или Cloud NAT) для выхода функции в интернет (нужен для обращения к Lockbox API)
+- Cloud Function должна достучаться до Lockbox (`payload.lockbox.api.cloud.yandex.net`) — для этого подсеть должна иметь egress в интернет через NAT (**этим занимается `scripts/ensure_nat.sh` — запускается автоматически из `deploy.sh`**, создаёт shared-egress gateway + route-table и привязывает её к подсети)
 
 Получить ID нужных ресурсов:
 
@@ -338,22 +338,24 @@ metrika_oauth_token  = "y0_AgAAAA..."
 
 ### Шаг 4 — Запустить развёртывание
 
-Проще всего — одна команда полного e2e (cleanup → apply → transfer → smoke):
+> Единственный ручной шаг до автоматизации: один раз создать Metrika-source endpoint в UI (поле `period` отсутствует в публичном API YC — см. ниже «Известное ограничение»). После этого всё — в скриптах.
+
+Полный e2e в одну команду (cleanup → deploy → transfer → smoke):
 
 ```bash
-ASSUME_YES=1 ./scripts/e2e.sh
+ASSUME_YES=1 EXISTING_SOURCE_ID=<dte...> ./scripts/e2e.sh
 ```
 
 Или по шагам, если хочется контроля на каждом этапе:
 
 ```bash
-./scripts/cleanup.sh   # удалить все ресурсы проекта в folder_id (idempotent)
-./scripts/deploy.sh    # preflight + terraform init + plan + apply
-./scripts/transfer.sh  # создать и активировать Data Transfer через yc CLI
-./scripts/smoke.sh     # invoke функции + проверка всех таблиц + топ-5 каналов
+KEEP_SOURCE_ID=<dte...> ./scripts/cleanup.sh    # удалить все проект-ресурсы, кроме UI-source
+./scripts/deploy.sh                              # preflight + terraform apply + ensure_nat.sh
+EXISTING_SOURCE_ID=<dte...> ./scripts/transfer.sh  # target + transfer через SDK (gRPC)
+./scripts/smoke.sh                               # invoke функции + проверка всех таблиц
 ```
 
-Все скрипты читают `terraform/terraform.tfvars` и `terraform output`. Секреты никогда не попадают в аргументы команд (т.е. не видны в `ps aux`): они идут через XML-конфиг ClickHouse с `chmod 600`, HTTPS-заголовки, или временные файлы в `mktemp -d $(chmod 700)`.
+Все скрипты читают `terraform/terraform.tfvars` и `terraform output`. Секреты **никогда не попадают в аргументы команд** (не видны в `ps aux`): XML-конфиг ClickHouse с `chmod 600`, HTTPS-заголовки, env-переменные, временные файлы в `mktemp -d` с `chmod 700`.
 
 После `deploy.sh` Terraform выведет:
 
@@ -373,17 +375,28 @@ trigger_id            = "..."
 
 | Скрипт | Действия |
 |--------|----------|
-| `scripts/prepare.sh` | Проверяет `yc`/`terraform`/`clickhouse-client`/`jq`, валидирует `terraform.tfvars` (нет placeholder'ов), скачивает Yandex CA → `functions/transform/CA.pem`, синхронизирует `sql/*.sql` в бандл функции |
-| `scripts/cleanup.sh` | По префиксу имени (`metrika-attribution-*`) удаляет: триггеры, функции, Data Transfer'ы + endpoint'ы, MDB-кластеры (снимает `deletion_protection`), Lockbox-секреты, Object Storage бакет, сервисные аккаунты; чистит локальный `terraform.tfstate` |
-| `scripts/deploy.sh` | Вызывает `prepare.sh`, затем `terraform init → plan → apply` |
-| `scripts/transfer.sh` | Забирает секреты из Lockbox, создаёт endpoint-metrika-source + endpoint-clickhouse-target + transfer (SNAPSHOT_ONLY с `period`), активирует, поллит статус до DONE/ERROR |
-| `scripts/smoke.sh` | Invoke функции + `curl --cacert CA.pem https://…:8443` к ClickHouse, проверяет `visits_*` + `attribution_results`, печатает топ-5 каналов |
-| `scripts/e2e.sh` | Оркестратор: последовательно вызывает cleanup → deploy → transfer → smoke |
+| `scripts/lib.sh` | Общие хелперы: логирование (`log`/`ok`/`warn`/`die`/`hdr`), `require_bin`, `tfvar_get` (HCL-парсер), `confirm`, `refresh_yc_token` (перед каждым терраформ/yc-вызовом — IAM-токены живут ~12ч) |
+| `scripts/prepare.sh` | Preflight: проверяет `yc`/`terraform`/`clickhouse-client`/`jq`/`python3`/`curl` + импорт `yandexcloud` SDK; валидирует `terraform.tfvars` (нет placeholder'ов + все обязательные ключи); скачивает Yandex CA → `functions/transform/CA.pem`; синхронизирует `sql/*.sql` в бандл функции (источник истины — `sql/`) |
+| `scripts/cleanup.sh` | По префиксу имени (`metrika-attribution-*`) удаляет: триггеры, функции, Data Transfer'ы + endpoint'ы, MDB-кластеры (снимает `deletion_protection`), Lockbox-секреты, Object Storage бакет (через `s3_empty.py`), сервисные аккаунты; чистит локальный `terraform.tfstate`. `KEEP_SOURCE_ID=<id>` сохраняет UI-созданный Metrika-source |
+| `scripts/s3_empty.py` | Опустошает Object Storage бакет через AWS SigV4 на чистой Python stdlib (без `aws-cli`). Поднимает одноразовый static access key через `yc iam access-key create` и удаляет его после |
+| `scripts/deploy.sh` | Вызывает `prepare.sh`, затем `terraform init → plan → apply`. После apply автоматически запускает `ensure_nat.sh` (нужен для Cloud Function → Lockbox) |
+| `scripts/ensure_nat.sh` | Создаёт shared-egress gateway + route-table с маршрутом `0.0.0.0/0 → gateway` и привязывает её к подсети. Идемпотентно — переиспользует существующие ресурсы. Пробует разные варианты флагов `yc vpc gateway create` для совместимости с разными версиями CLI |
+| `scripts/setup_transfer.py` | Через `yandexcloud` SDK (gRPC): создаёт Metrika-source endpoint (или использует существующий по `EXISTING_SOURCE_ID`) + ClickHouse-target endpoint + transfer (SNAPSHOT_ONLY) + активирует + поллит статус. Поддерживает probe-режимы: `PROBE_ENDPOINT_ID=<id>` и `PROBE_TRANSFER_ID=<id>` — дампит wire-bytes proto и подсвечивает unknown-поля с датами |
+| `scripts/transfer.sh` | Тонкая обёртка над `setup_transfer.py`: читает секреты из Lockbox, чистит старые endpoint'ы (кроме `EXISTING_SOURCE_ID`), передаёт всё в Python через env-переменные (не через argv — не видно в `ps aux`), поллит статус до DONE |
+| `scripts/smoke.sh` | Invoke функции + `curl --cacert CA.pem https://…:8443` к ClickHouse. Автоматически создаёт `VIEW visits_raw` над реальной таблицей Data Transfer (`visits_<transfer_id>`). Проверяет все пайплайн-таблицы, кросс-модельный инвариант (`sum(visits)` одинакова у всех 4 моделей), печатает топ-5 каналов |
+| `scripts/e2e.sh` | Оркестратор: cleanup → deploy → transfer → smoke |
 
 Переменные окружения:
-- `ASSUME_YES=1` — пропустить все интерактивные подтверждения
-- `PERIOD_FROM` / `PERIOD_TO` (YYYY-MM-DD) — диапазон дат снапшота Metrika (по умолчанию последние 30 дней)
-- `FOLDER_ID`, `PREFIX`, `BUCKET_NAME` — переопределить значения из tfvars в cleanup.sh
+
+| Переменная | Скрипт(ы) | Назначение |
+|-----------|----------|------------|
+| `ASSUME_YES=1` | все | пропустить все интерактивные подтверждения |
+| `PERIOD_FROM` / `PERIOD_TO` (YYYY-MM-DD) | `transfer.sh` | диапазон дат снапшота Metrika (по умолчанию последние 30 дней). Игнорируется при `EXISTING_SOURCE_ID` — период уже на UI-созданном endpoint'е |
+| `EXISTING_SOURCE_ID=<dte...>` | `transfer.sh` | не создавать Metrika-source (взять из UI) — см. «Известное ограничение» |
+| `KEEP_SOURCE_ID=<dte...>` | `cleanup.sh` | сохранить один endpoint поверх cleanup'а (чтобы UI-source пережил пересборку) |
+| `FOLDER_ID`, `PREFIX`, `BUCKET_NAME` | `cleanup.sh` | переопределить значения из tfvars |
+| `PROBE_ENDPOINT_ID` / `PROBE_TRANSFER_ID` | `setup_transfer.py` | режим интроспекции wire-bytes, не выполняет Create |
+| `PERIOD_FIELD_NUMBER` / `PERIOD_FROM_TAG` / `PERIOD_TO_TAG` | `setup_transfer.py` | переопределить догадку по номеру поля при инжекции period как unknown field (по умолчанию 4 / 1 / 2) |
 
 ---
 
@@ -392,35 +405,44 @@ trigger_id            = "..."
 ```
 terraform/
   versions.tf          # Провайдеры: yandex ~> 0.120, archive ~> 2.4
-  variables.tf         # Все входные переменные
-  outputs.tf           # Ключевые ID ресурсов
+  variables.tf         # Все входные переменные (+ ca_cert_path для DDL-TLS)
+  outputs.tf           # clickhouse_host/_cluster_id/_db_name/_db_user, function_id, lockbox_secret_id, trigger_id
   main.tf              # Корневой модуль: SA, IAM, вызов submodules
 
   modules/
     lockbox/           # Lockbox-секрет + lockbox.payloadViewer для SA
-    clickhouse/        # Managed ClickHouse кластер + DDL (01_schema.sql)
+    clickhouse/        # Managed ClickHouse + DDL (strict TLS via Yandex CA, пароль в chmod-600 XML)
     function/          # Cloud Function + Object Storage + zip-архив кода
-    transfer/          # Data Transfer endpoints + трансфер
+    transfer/          # (не используется) — Data Transfer endpoints вынесены в scripts/setup_transfer.py
     scheduler/         # Timer trigger (ежедневный запуск функции)
 ```
+
+Cloud NAT (`yandex_vpc_gateway` + `yandex_vpc_route_table` + binding к подсети) создаётся **не через terraform**, а через `scripts/ensure_nat.sh` — не хотелось управлять через tf-провайдер чужой подсетью, которую пользователь передаёт как `subnet_id`.
 
 **Поток данных секретов:**
 
 ```
-terraform.tfvars
+terraform.tfvars (или $TF_VAR_*)
   │  clickhouse_password
   │  metrika_oauth_token
   ▼
 Lockbox secret  ──── lockbox.payloadViewer ──▶ function SA
-  │                                            transfer SA
-  │  secret_ref (нативно)
-  ▼
-Data Transfer endpoint  (читает metrika_oauth_token, clickhouse_password)
+                                               transfer SA
 
-  │  LOCKBOX_SECRET_ID (env, не секрет)
+  │  через yc lockbox payload get (в scripts/transfer.sh)
   ▼
-Cloud Function  ──── IAM token (metadata) ──▶ Lockbox API
-                                               (читает clickhouse_password)
+Data Transfer endpoints (metrika-source + clickhouse-target)
+  создаются через yandexcloud Python SDK (gRPC),
+  секреты идут в env-переменных Python-процесса (не в argv)
+
+  │  LOCKBOX_SECRET_ID (env-переменная функции, не секрет)
+  ▼
+Cloud Function  ──── IAM token (metadata 169.254.169.254) ──▶ Lockbox API
+                     (через shared-egress NAT из подсети)
+                                               │
+                                               ▼
+                                    читает clickhouse_password,
+                                    ретраи 2/4/8/16с на DNS/net ошибки
 ```
 
 ---
@@ -465,11 +487,13 @@ terraform destroy
 Все чувствительные точки задокументированы явно:
 
 - **Секреты хранятся в Lockbox.** `clickhouse_password` и `metrika_oauth_token` попадают в Lockbox из `terraform.tfvars` (или `TF_VAR_*`) и извлекаются функцией/скриптами через IAM-токен. В env-переменных функции их нет.
-- **TLS обязателен.** Функция использует HTTPS (`8443`) с проверкой по Yandex CA (`functions/transform/CA.pem`, скачивается `scripts/prepare.sh`). DDL-провизионер `null_resource.schema` использует `verificationMode=strict` с этим же CA (раньше был `mode=none` — исправлено).
-- **Пароль не в cmdline.** ClickHouse DDL-провизионер получает пароль через временный XML-конфиг с `chmod 600` — не виден в `ps aux`. Smoke-скрипт отправляет пароль в HTTP-заголовке `X-ClickHouse-Key` поверх TLS, а не через `--password`.
-- **Секреты из tfvars никогда не в git.** `.gitignore` исключает `terraform.tfvars`, `*.tfstate*`, `CA.pem`.
-- **Сеть.** По умолчанию MDB-кластер имеет публичный IP (`assign_public_ip = true`), чтобы локальный провизионер мог применить DDL. Для prod — установите `false`, а DDL прогоните из внутренней сети (Compute/Jump-host или Cloud Functions). Также рекомендуется указать `security_group_ids` в `module.clickhouse` с whitelist по IP.
-- **`CLICKHOUSE_TLS=0` разрешён, но `prepare.sh` явно warn'ит.** Для тестовых окружений с plaintext.
+- **TLS обязателен с проверкой сертификата.** Функция использует HTTPS (`8443`) с проверкой по Yandex CA (`functions/transform/CA.pem`, скачивается `scripts/prepare.sh` один раз и бандлится в zip — не TOFU на cold start). DDL-провизионер `null_resource.schema` использует `verificationMode=strict` с этим же CA (раньше был `mode=none` — исправлено в этой сессии, см. `terraform/modules/clickhouse/main.tf`).
+- **Пароли не в cmdline.** ClickHouse DDL-провизионер получает пароль через временный XML-конфиг с `chmod 600` — не виден в `ps aux` (раньше был через `--password "$CH_PASSWORD"` — исправлено). `smoke.sh` отправляет пароль в HTTP-заголовке `X-ClickHouse-Key` поверх TLS. `setup_transfer.py` — через env-переменные Python-процесса. `s3_empty.py` — через AWS-env с одноразовым ключом.
+- **IAM-токены обновляются.** `scripts/lib.sh:refresh_yc_token` делает `yc iam create-token` перед каждым `terraform`/`yc`-вызовом (добавлено после инцидента с истечением токена посреди `apply`). Работает с OAuth/SA-key профилем; «сырой» IAM-токен в `yc config` → не сможет обновиться, нужен `yc init`.
+- **Секреты из tfvars никогда не в git.** `.gitignore` исключает `terraform.tfvars`, `*.tfstate*`, `CA.pem`, `.venv/`.
+- **Сеть.** По умолчанию MDB-кластер имеет публичный IP (`assign_public_ip = true`) — нужен для локального DDL-провизионера. Для prod установите `false`, DDL прогоните из VPC (Jump-host). Также рекомендуется задать `security_group_ids` в `module.clickhouse` с whitelist по IP.
+- **Lockbox-ретраи.** Функция ретраит запросы к metadata + Lockbox с экспоненциальным бэкоффом (2/4/8/16с) — закрывает окно stale DNS на cold start в VPC.
+- **`CLICKHOUSE_TLS=0` разрешён, но `prepare.sh` явно `warn`'ит.** Для тестовых окружений с plaintext.
 
 ---
 
@@ -509,6 +533,22 @@ terraform destroy
 ```bash
 KEEP_SOURCE_ID=<dte...> ./scripts/cleanup.sh
 ```
+
+---
+
+## Troubleshooting
+
+| Симптом | Причина и фикс |
+|---------|---------------|
+| `terraform apply`: `The token has expired` | Истёк IAM-токен за время долгого apply. Скрипты уже делают `yc iam create-token` перед каждым вызовом. Если через `scripts/deploy.sh` — просто перезапусти. Если руками — `export YC_TOKEN=$(yc iam create-token)` перед `terraform apply`. |
+| `ERROR: The bucket you tried to delete is not empty.` | `yc storage bucket delete` не умеет force. `cleanup.sh` вызывает `scripts/s3_empty.py` (SigV4 на stdlib) с временным static access key — без `aws-cli`. |
+| `scripts/prepare.sh`: `missing Python dependency: yandexcloud` | PEP 668 блокирует системный pip. Поставь через venv: `python3 -m venv .venv && source .venv/bin/activate && pip install yandexcloud`. |
+| `ERROR: unknown flag: --shared-egress-gateway` в `ensure_nat.sh` | Флаги `yc vpc gateway create` отличаются между версиями CLI. Скрипт пробует три варианта по очереди. Если все три упали — run `yc vpc gateway create --help` и скинь актуальный синтаксис. |
+| `CreateTransfer`: `current metrica source config not suitable for snapshot: period setting required` | Период не пробросился на endpoint. `period` write-only в публичном API. Используй `EXISTING_SOURCE_ID=<dte...>` — ссылайся на UI-созданный source, см. «Известное ограничение». |
+| Функция: `Lockbox error: <urlopen error [Errno -3] Temporary failure in name resolution>` | NAT не подключён к подсети, или DNS stale на cold start. `scripts/ensure_nat.sh` запускается из `deploy.sh` автоматически. Если упало — проверь: `yc vpc subnet get --id <id> --format json \| jq .route_table_id`. Retry в `handler.py` должен добить за 2–16с. |
+| `smoke.sh`: `visits_raw rows: 0`, список таблиц показывает `visits_<transfer_id>` | YC Data Transfer создаёт таблицу с именем `visits_<id_трансфера>`. `smoke.sh` сам создаёт `VIEW visits_raw AS SELECT * FROM visits_<id_трансфера>` — проверь что кандидат не `visits_combined`/`visits_prepared` (эвристика уже их исключает). |
+| `smoke.sh`: все `conv=0` и топ каналов тоже `0` | Это не баг пайплайна — просто по выбранному `goal_id` не было конверсий в этом срезе данных. Смок теперь сортирует топ по `visits` в этом случае + показывает колонки `visits`/`conv`/`revenue` по всем 4 моделям с проверкой cross-model инварианта `sum(visits)`. Проверь `SELECT arrayJoin(Goals.ID), count() FROM visits_raw GROUP BY 1 ORDER BY 2 DESC LIMIT 20` — там реальные id целей. |
+| `terraform apply` не подхватывает изменения кода функции | Hash в `archive_file` может совпасть. Удали `/tmp/<fn_name>-function.zip` или используй `yc serverless function version create` вручную — см. раздел «Пересоздание ресурсов». |
 
 ---
 
