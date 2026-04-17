@@ -19,6 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 require_bin yc jq
 
+hdr "Refreshing YC IAM token"
+refresh_yc_token
+
 FOLDER_ID="${FOLDER_ID:-$(tfvar_get folder_id)}"
 PREFIX="${PREFIX:-$(tfvar_get name 2>/dev/null || echo metrika-attribution)}"
 BUCKET_NAME="${BUCKET_NAME:-$(tfvar_get function_bucket_name 2>/dev/null || echo "")}"

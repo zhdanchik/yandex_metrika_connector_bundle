@@ -14,6 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 require_bin yc jq curl terraform
 
+hdr "Refreshing YC IAM token"
+refresh_yc_token
+
 FOLDER_ID="$(tfvar_get folder_id)"
 PREFIX="$(tfvar_get name 2>/dev/null || echo metrika-attribution)"
 GOAL_ID="$(tfvar_get goal_id)"

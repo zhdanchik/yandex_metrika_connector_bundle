@@ -29,6 +29,21 @@ require_bin() {
   done
 }
 
+# Export a fresh YC IAM token into YC_TOKEN.  IAM tokens expire after ~12h,
+# so every script that drives terraform/yc calls this first.  Returns 0 even
+# on failure so a user authenticated via YC_SERVICE_ACCOUNT_KEY_FILE (where
+# the provider refreshes internally) still works.
+refresh_yc_token() {
+  command -v yc >/dev/null 2>&1 || return 0
+  local tok
+  if tok=$(yc iam create-token 2>/dev/null) && [ -n "$tok" ]; then
+    export YC_TOKEN="$tok"
+    log "  refreshed YC_TOKEN (\$YC_TOKEN exported)"
+  else
+    warn "  yc iam create-token failed — relying on provider's own auth"
+  fi
+}
+
 # Parse a simple HCL key from terraform.tfvars: handles "key = value" lines
 # with optional quotes.  Numbers come back unquoted; strings without quotes.
 tfvar_get() {
