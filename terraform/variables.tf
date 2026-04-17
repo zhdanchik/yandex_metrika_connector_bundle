@@ -79,3 +79,9 @@ variable "cron_expression" {
   type        = string
   default     = "0 3 * * ?"  # 03:00 UTC ежедневно (YC cron: min hour dom month dow, dow=?)
 }
+
+variable "ca_cert_path" {
+  description = "Путь к Yandex CA-сертификату для TLS-проверки при DDL-провизионинге. Скачайте через scripts/prepare.sh."
+  type        = string
+  default     = "../functions/transform/CA.pem"
+}

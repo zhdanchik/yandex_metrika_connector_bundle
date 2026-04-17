@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 
+# Python venv for yandexcloud SDK (see scripts/prepare.sh, README)
+.venv/
+venv/
+
 # Terraform
 terraform/.terraform/
 terraform/.terraform.lock.hcl

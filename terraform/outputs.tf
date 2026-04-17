@@ -8,6 +8,16 @@ output "clickhouse_cluster_id" {
   value       = module.clickhouse.cluster_id
 }
 
+output "clickhouse_db_name" {
+  description = "Имя базы данных ClickHouse"
+  value       = module.clickhouse.db_name
+}
+
+output "clickhouse_db_user" {
+  description = "Имя пользователя ClickHouse"
+  value       = module.clickhouse.db_user
+}
+
 output "function_id" {
   description = "ID Cloud Function трансформации"
   value       = module.function.function_id

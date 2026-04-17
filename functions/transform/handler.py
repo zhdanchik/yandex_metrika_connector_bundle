@@ -82,22 +82,42 @@ _YC_CA_TMP  = "/tmp/yandex-ca.pem"
 
 
 def _get_lockbox_payload() -> dict:
-    """Fetch all secret entries from Yandex Lockbox via instance metadata IAM token."""
+    """Fetch all secret entries from Yandex Lockbox via instance metadata IAM token.
+
+    Retries transient DNS/network failures with exponential backoff. Cloud
+    Functions warming up inside a VPC can observe a stale negative-DNS
+    cache for the first few seconds until the egress NAT routes are
+    picked up by the container's resolver.
+    """
+    import socket
     secret_id = os.environ["LOCKBOX_SECRET_ID"]
+
+    def _with_retry(req, timeout, label):
+        last_exc: Exception | None = None
+        for attempt in range(1, 5):
+            try:
+                return urllib.request.urlopen(req, timeout=timeout).read()
+            except (urllib.error.URLError, socket.gaierror, TimeoutError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "lockbox: %s attempt %d failed (%s), retrying",
+                    label, attempt, exc,
+                )
+                import time
+                time.sleep(2 ** attempt)  # 2, 4, 8, 16 s
+        raise RuntimeError(f"{label} failed after 4 attempts: {last_exc}") from last_exc
 
     meta_req = urllib.request.Request(
         _METADATA_TOKEN_URL,
         headers={"Metadata-Flavor": "Google"},
     )
-    with urllib.request.urlopen(meta_req, timeout=5) as resp:
-        iam_token = json.loads(resp.read())["access_token"]
+    iam_token = json.loads(_with_retry(meta_req, 5, "metadata token"))["access_token"]
 
     secret_req = urllib.request.Request(
         _LOCKBOX_PAYLOAD_URL.format(secret_id=secret_id),
         headers={"Authorization": f"Bearer {iam_token}"},
     )
-    with urllib.request.urlopen(secret_req, timeout=10) as resp:
-        entries = json.loads(resp.read())["entries"]
+    entries = json.loads(_with_retry(secret_req, 10, "lockbox payload"))["entries"]
 
     return {e["key"]: e["textValue"] for e in entries}
 

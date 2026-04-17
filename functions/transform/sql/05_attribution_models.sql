@@ -19,6 +19,8 @@
 -- One DROP PARTITION clears all models for this goal at once.
 -- ============================================================
 
+
+
 -- ============================================================
 -- MODEL 1: First Touch
 -- 100% credit to history.SourceCode[1] (oldest touchpoint).

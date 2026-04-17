@@ -41,7 +41,7 @@ locals {
 
 # Применяет DDL из sql/01_schema.sql сразу после создания кластера.
 # Перезапускается только при изменении самой схемы или пересоздании кластера.
-# Требует: clickhouse-client >= 21.1 на машине, запускающей terraform apply.
+# Требует: clickhouse-client >= 21.1 + CA-сертификат YC в CA_CERT_PATH.
 resource "null_resource" "schema" {
   depends_on = [yandex_mdb_clickhouse_cluster.main]
 
@@ -51,32 +51,57 @@ resource "null_resource" "schema" {
   }
 
   provisioner "local-exec" {
-    # Пароль передаётся через переменную окружения — не виден в ps aux.
+    # Пароль передаётся через XML-конфиг с chmod 600 — не виден в ps aux.
     environment = {
       CH_HOST     = local.host
       CH_USER     = var.db_user
       CH_PASSWORD = var.clickhouse_password
       CH_DB       = var.db_name
+      CA_CERT     = var.ca_cert_path
     }
     command = <<-EOT
-      # Write a minimal TLS config that skips certificate verification.
-      # clickhouse 21+ (single binary) reads XML config via --config-file.
-      printf '<clickhouse><openSSL><client><verificationMode>none</verificationMode></client></openSSL></clickhouse>' \
-        > /tmp/ch-tls.xml
+      set -euo pipefail
 
-      # Support both old-style "clickhouse-client" and new single-binary "clickhouse client"
-      if command -v clickhouse-client &>/dev/null; then
+      if [ ! -f "$CA_CERT" ]; then
+        echo "ERROR: CA certificate not found at $CA_CERT" >&2
+        echo "Run scripts/prepare.sh before terraform apply, or set var.ca_cert_path" >&2
+        exit 1
+      fi
+
+      # XML-конфиг содержит пароль И TLS-настройки с проверкой по YC CA.
+      # Создаётся mktemp + chmod 600, чтобы другие пользователи не прочитали пароль.
+      CH_CFG=$(mktemp -t ch-cfg.XXXXXX.xml)
+      trap 'rm -f "$CH_CFG"' EXIT
+      chmod 600 "$CH_CFG"
+
+      # Exit-on-error ловим, python3 для escape'а пароля в XML (< > & " '\'').
+      python3 - "$CH_USER" "$CH_PASSWORD" "$CA_CERT" > "$CH_CFG" <<'PY'
+import sys, html
+user, password, ca = sys.argv[1], sys.argv[2], sys.argv[3]
+print(f"""<clickhouse>
+  <user>{html.escape(user)}</user>
+  <password>{html.escape(password)}</password>
+  <openSSL>
+    <client>
+      <loadDefaultCAFile>false</loadDefaultCAFile>
+      <caConfig>{html.escape(ca)}</caConfig>
+      <verificationMode>strict</verificationMode>
+      <invalidCertificateHandler><name>RejectCertificateHandler</name></invalidCertificateHandler>
+    </client>
+  </openSSL>
+</clickhouse>""")
+PY
+
+      if command -v clickhouse-client >/dev/null 2>&1; then
         CH_BIN="clickhouse-client"
       else
         CH_BIN="clickhouse client"
       fi
       $CH_BIN \
-        --config-file   /tmp/ch-tls.xml \
+        --config-file   "$CH_CFG" \
         --host          "$CH_HOST" \
         --port          9440 \
         --secure        \
-        --user          "$CH_USER" \
-        --password      "$CH_PASSWORD" \
         --database      "$CH_DB" \
         --multiquery    \
         < "${path.module}/../../../sql/01_schema.sql"
