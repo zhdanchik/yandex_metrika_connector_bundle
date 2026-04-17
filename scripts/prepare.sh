@@ -24,7 +24,11 @@ fi
 # (Metrika Data Transfer endpoint is gRPC-only; yc CLI doesn't cover it.)
 if ! python3 -c 'import yandexcloud, yandex.cloud.datatransfer.v1.endpoint_service_pb2' 2>/dev/null; then
   warn "  python module 'yandexcloud' not found — required by scripts/transfer.sh"
-  warn "  install once:  pip install --user yandexcloud"
+  warn "  modern Python (3.12+) blocks system-wide pip (PEP 668).  Use a venv:"
+  warn "    python3 -m venv .venv"
+  warn "    . .venv/bin/activate"
+  warn "    pip install yandexcloud"
+  warn "  then run the scripts from the activated shell."
   die "aborting so you can install yandexcloud before continuing"
 fi
 ok "  all binaries + Python SDK present"

@@ -238,8 +238,20 @@ pytest --integration tests/test_integration.py -v
 | `clickhouse-client` | ≥ 21.1 (для применения DDL-схемы) |
 | `jq` | для парсинга JSON-ответов yc |
 | `python3` | для парсинга HCL и escape'а паролей в XML |
-| `python3 -m pip install yandexcloud` | SDK для gRPC-вызовов Data Transfer (Metrika-source endpoint) |
+| `yandexcloud` (pip) | Python SDK для gRPC-вызовов Data Transfer — Metrika-source endpoint нет ни в REST-шлюзе YC, ни в `yc` CLI (только в SDK). Установка через **venv** — см. ниже |
 | `curl` | для скачивания CA и HTTPS-запросов к ClickHouse в smoke-тесте |
+
+### Установка `yandexcloud` (Python SDK)
+
+Современные Python (3.12+) блокируют системный `pip install` (PEP 668 — «externally-managed-environment»), поэтому используй venv:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install yandexcloud
+```
+
+Активируй venv в той же сессии, где запускаешь `./scripts/transfer.sh` или `./scripts/e2e.sh`. Если предпочитаешь `pipx`/`uv` — тоже ок, главное чтобы `python3 -c 'import yandexcloud'` в текущей оболочке отрабатывал без ошибок. `prepare.sh` явно проверяет это и не даст запуститься без SDK.
 
 Аутентификация Terraform выполняется через `yc iam create-token` или сервисный аккаунт с ключом (см. [документацию провайдера](https://terraform-provider.yandexcloud.net/)).
 
