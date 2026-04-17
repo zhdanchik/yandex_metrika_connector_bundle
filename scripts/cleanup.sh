@@ -46,6 +46,8 @@ ENDPOINTS=$(yc_folder datatransfer endpoint list --format json 2>/dev/null \
 CH_CLUSTERS=$(yc_folder managed-clickhouse cluster list --format json 2>/dev/null \
   | jq -r --arg f "$PREFIX" '.[] | select(.name|startswith($f)) | "\(.id)\t\(.name)\t\(.deletion_protection // false)"' || true)
 SECRETS=$(list_ids "lockbox secret" "$PREFIX")
+ROUTE_TABLES=$(list_ids "vpc route-table" "$PREFIX")
+GATEWAYS=$(list_ids "vpc gateway" "$PREFIX")
 SAS=$(yc iam service-account list --folder-id "$FOLDER_ID" --format json 2>/dev/null \
   | jq -r --arg f "$PREFIX" '.[] | select(.name|startswith($f)) | "\(.id)\t\(.name)"' || true)
 
@@ -55,6 +57,8 @@ print_list "Data Transfers"    "$TRANSFERS"
 print_list "Transfer Endpoints" "$ENDPOINTS"
 print_list "ClickHouse clusters" "$CH_CLUSTERS"
 print_list "Lockbox secrets"   "$SECRETS"
+print_list "Route tables"      "$ROUTE_TABLES"
+print_list "VPC gateways"      "$GATEWAYS"
 print_list "Service accounts"  "$SAS"
 [ -n "$BUCKET_NAME" ] && printf '  Bucket: %s\n' "$BUCKET_NAME" >&2
 
@@ -130,6 +134,34 @@ while IFS=$'\t' read -r id name; do
   log "secret $name ($id)"
   yc_folder lockbox secret delete --id "$id" || warn "  failed: $id"
 done <<<"$SECRETS"
+
+# VPC — route tables must be unbound from subnets before delete.
+# Subnet itself is user-owned, so we just unbind (--route-table-id "")
+# and leave the subnet in place.
+hdr "Unbinding subnet from route-table (if bound to ours) + deleting route tables"
+SUBNET_ID_VAL="$(tfvar_get subnet_id 2>/dev/null || echo "")"
+while IFS=$'\t' read -r id name; do
+  [ -z "$id" ] && continue
+  if [ -n "$SUBNET_ID_VAL" ]; then
+    BOUND_RT="$(yc vpc subnet get --id "$SUBNET_ID_VAL" --format json 2>/dev/null \
+      | jq -r '.route_table_id // empty')"
+    if [ "$BOUND_RT" = "$id" ]; then
+      log "unbinding subnet $SUBNET_ID_VAL from route-table $id"
+      yc vpc subnet update --id "$SUBNET_ID_VAL" --route-table-id "" \
+        || warn "  unbind failed: $id"
+    fi
+  fi
+  log "route-table $name ($id)"
+  yc_folder vpc route-table delete --id "$id" || warn "  failed: $id"
+done <<<"$ROUTE_TABLES"
+
+# Gateways — deletable only after no route-table references them.
+hdr "Deleting VPC gateways"
+while IFS=$'\t' read -r id name; do
+  [ -z "$id" ] && continue
+  log "gateway $name ($id)"
+  yc_folder vpc gateway delete --id "$id" || warn "  failed: $id"
+done <<<"$GATEWAYS"
 
 # Object storage bucket — must be emptied before delete.
 # We use scripts/s3_empty.py (stdlib-only SigV4 S3 client) so no aws-cli
