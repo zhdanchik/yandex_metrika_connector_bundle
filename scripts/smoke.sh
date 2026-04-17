@@ -56,15 +56,24 @@ if [ "${RAW_COUNT:-0}" -lt 1 ]; then
   TABLES="$(ch "SELECT name FROM system.tables WHERE database='$CH_DB' AND name NOT LIKE '.%' FORMAT TSV")"
   echo "$TABLES" | sed 's/^/    /'
 
-  # Pick a likely candidate — anything with 'visit' in the name.
-  CANDIDATE="$(echo "$TABLES" | grep -iE 'visit' | head -1 | tr -d '\n' || true)"
+  # YC Data Transfer names the populated table 'visits_<transfer_id>'.
+  # Exclude the pipeline's own tables (visits_raw/_prepared/_combined,
+  # attribution_results) so we don't accidentally alias an empty
+  # intermediate table.
+  CANDIDATE="$(echo "$TABLES" \
+    | grep -iE '^visits_' \
+    | grep -vxE 'visits_raw|visits_prepared|visits_combined' \
+    | head -1 | tr -d '\n' || true)"
   if [ -z "$CANDIDATE" ]; then
-    die "no table with 'visit' in the name found in $CH_DB — run transfer first"
+    die "no transfer-populated visits_<id> table found in $CH_DB — run transfer first"
   fi
 
   warn "found candidate: $CANDIDATE"
-  warn "creating view visits_raw → $CANDIDATE"
-  ch "CREATE OR REPLACE VIEW visits_raw AS SELECT * FROM $CANDIDATE" > /dev/null
+  warn "dropping empty visits_raw table and re-creating as view → $CANDIDATE"
+  # The existing visits_raw is a TABLE (from sql/01_schema.sql), not a view.
+  # CREATE OR REPLACE VIEW would fail against a table — drop + create.
+  ch "DROP TABLE IF EXISTS visits_raw" > /dev/null
+  ch "CREATE VIEW visits_raw AS SELECT * FROM $CANDIDATE" > /dev/null
   RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' | tr -d '\n')"
   log "  visits_raw (via view) rows: $RAW_COUNT"
   [ "$RAW_COUNT" -gt 0 ] || die "view still empty — something else is off"
