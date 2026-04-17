@@ -327,6 +327,40 @@ def _decode_nested(chunk: bytes, indent: str = "    ") -> None:
             sys.stderr.write(f"{indent}inner field={fn} wt={wt} value={payload!r}\n")
 
 
+def probe_transfer(sdk, transfer_id: str) -> int:
+    """Fetch a Transfer and dump its full wire bytes.
+
+    Use when probe_endpoint shows no unknown fields — the period might
+    live on the transfer, not the endpoint.  Manually create a full
+    transfer in the UI first, then run:
+
+        PROBE_TRANSFER_ID=<id> python3 scripts/setup_transfer.py
+    """
+    from yandex.cloud.datatransfer.v1.transfer_service_pb2 import GetTransferRequest
+    transfer_stub = sdk.client(TransferServiceStub)
+    tr = transfer_stub.Get(GetTransferRequest(transfer_id=transfer_id))
+    raw = tr.SerializeToString()
+    known = {f.number for f in tr.DESCRIPTOR.fields_by_name.values()}
+
+    log(f"transfer {transfer_id}")
+    log(f"  proto-known numbers on Transfer: {sorted(known)}")
+    log(f"  raw bytes ({len(raw)}): {raw.hex()[:400]}{'...' if len(raw) > 200 else ''}")
+    log("")
+
+    for (fn, wt, payload, is_known) in _walk_wire(raw, known):
+        marker = "known" if is_known else "UNKNOWN"
+        if wt == 2 and isinstance(payload, bytes):
+            log(f"  field={fn} wt={wt} len={len(payload)} [{marker}]  hex={payload.hex()[:200]}")
+            _decode_nested(payload)
+        else:
+            log(f"  field={fn} wt={wt} value={payload!r} [{marker}]")
+
+    log("")
+    log("→ Look for DATE=... strings anywhere in the output.  Their")
+    log("  location tells you where the YC backend stores the period.")
+    return 0
+
+
 def probe_endpoint(sdk, endpoint_id: str) -> int:
     """Fetch a Metrika-source endpoint and reveal the period field tag.
 
@@ -378,12 +412,17 @@ def _read_varint(buf: bytes, start: int):
 
 
 def main() -> int:
-    # Probe mode — dump an existing endpoint's wire bytes and exit.
-    probe_id = os.environ.get("PROBE_ENDPOINT_ID")
-    if probe_id:
+    # Probe mode — dump an existing endpoint/transfer's wire bytes and exit.
+    probe_ep = os.environ.get("PROBE_ENDPOINT_ID")
+    probe_tr = os.environ.get("PROBE_TRANSFER_ID")
+    if probe_ep or probe_tr:
         _require_env("YC_TOKEN")
         sdk = yandexcloud.SDK(iam_token=os.environ["YC_TOKEN"])
-        return probe_endpoint(sdk, probe_id)
+        if probe_ep:
+            probe_endpoint(sdk, probe_ep)
+        if probe_tr:
+            probe_transfer(sdk, probe_tr)
+        return 0
 
     env = _require_env(
         "YC_TOKEN", "FOLDER_ID",
