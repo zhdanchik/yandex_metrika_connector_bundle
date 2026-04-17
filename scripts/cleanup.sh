@@ -118,21 +118,40 @@ while IFS=$'\t' read -r id name; do
   yc_folder lockbox secret delete --id "$id" || warn "  failed: $id"
 done <<<"$SECRETS"
 
-# Object storage bucket — must be emptied before delete
+# Object storage bucket — must be emptied before delete.
+# We use scripts/s3_empty.py (stdlib-only SigV4 S3 client) so no aws-cli
+# dependency is required.  Credentials come from a temporary static
+# access key minted for the storage SA.
 if [ -n "$BUCKET_NAME" ]; then
   hdr "Deleting Object Storage bucket"
   log "checking bucket $BUCKET_NAME"
   if yc storage bucket get --name "$BUCKET_NAME" >/dev/null 2>&1; then
-    # Need to remove all objects + multipart uploads first.
-    if command -v aws >/dev/null 2>&1; then
-      log "emptying bucket via aws-cli (S3 endpoint)"
-      AWS_EC2_METADATA_DISABLED=true aws --endpoint-url=https://storage.yandexcloud.net \
-        s3 rm "s3://$BUCKET_NAME" --recursive || warn "  s3 rm failed (may need creds)"
+    STORAGE_SA_NAME="${PREFIX}-transform-storage-sa"
+    STORAGE_SA_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json \
+      | jq -r --arg n "$STORAGE_SA_NAME" '.[] | select(.name==$n) | .id')"
+
+    if [ -z "$STORAGE_SA_ID" ]; then
+      warn "  storage SA $STORAGE_SA_NAME not found — can't empty bucket"
+      warn "  aborting bucket delete (manual cleanup required)"
     else
-      warn "aws-cli not installed; bucket objects will block delete. Install awscli or empty manually."
+      log "minting temporary static access key for SA $STORAGE_SA_ID"
+      KEY_JSON="$(yc iam access-key create --service-account-id "$STORAGE_SA_ID" --format json)"
+      export AWS_ACCESS_KEY_ID="$(echo "$KEY_JSON"  | jq -r '.access_key.key_id')"
+      export AWS_SECRET_ACCESS_KEY="$(echo "$KEY_JSON" | jq -r '.secret')"
+
+      log "emptying bucket $BUCKET_NAME via stdlib S3 client"
+      if python3 "$SCRIPT_DIR/s3_empty.py" "$BUCKET_NAME"; then
+        log "deleting bucket"
+        yc storage bucket delete --name "$BUCKET_NAME" || warn "  delete failed"
+      else
+        warn "  failed to empty bucket — leaving it alone"
+      fi
+
+      log "revoking temporary access key $AWS_ACCESS_KEY_ID"
+      yc iam access-key delete --id "$AWS_ACCESS_KEY_ID" >/dev/null \
+        || warn "  failed to delete temp key (will be removed with SA)"
+      unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
     fi
-    log "deleting bucket"
-    yc storage bucket delete --name "$BUCKET_NAME" || warn "  failed (likely non-empty)"
   else
     log "bucket $BUCKET_NAME doesn't exist, skipping"
   fi
