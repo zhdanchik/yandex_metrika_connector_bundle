@@ -17,7 +17,7 @@ sql/
 functions/
   transform/
     handler.py               # Точка входа Yandex Cloud Function
-    requirements.txt         # clickhouse-driver
+    requirements.txt         # Нет сторонних зависимостей (ClickHouse — через HTTP API)
     sql/                     # Копии SQL-файлов, входящие в zip-архив функции
 
 tests/
@@ -36,7 +36,7 @@ pyproject.toml               # pytest-конфигурация
 ## Архитектура пайплайна
 
 ```
-visits_raw  (YC Data Transfer, CollapsingMergeTree)
+visits_raw  (YC Data Transfer, VersionedCollapsingMergeTree)
     │
     │  02_prepare_visits.sql   {counter_id, goal_id}
     ▼
@@ -61,19 +61,21 @@ attribution_results  (ReplacingMergeTree, PARTITION BY goal_id)
 ## Таблицы ClickHouse
 
 ### `visits_raw`
-Заполняется YC Data Transfer. Движок `CollapsingMergeTree(Sign)`.
+Заполняется YC Data Transfer. Движок `VersionedCollapsingMergeTree(Sign, VisitVersion)`.
+
+> **Важно:** YC Data Transfer создаёт таблицу с движком `VersionedCollapsingMergeTree`, а не `CollapsingMergeTree`. Схема в `sql/01_schema.sql` соответствует этому факту.
 
 Ключевые поля:
 | Поле | Тип | Описание |
 |------|-----|----------|
 | `CounterID` | UInt32 | Счётчик Метрики |
-| `UserIDHash` | UInt64 | Анонимизированный ID посетителя |
+| `CounterUserIDHash` | UInt64 | Анонимизированный ID посетителя (имя поля от YC Data Transfer) |
 | `VisitID` | UInt64 | ID визита |
 | `UTCStartTime` | DateTime | Время начала визита (UTC) |
-| `VisitVersion` | UInt32 | Версия записи для argMax-дедупликации |
+| `VisitVersion` | UInt32 | Версия записи; argMax(field, VisitVersion) берёт актуальное значение при повторной доставке |
 | `TrafficSource.*` | Nested | Источники трафика (Model=1 — первичный) |
 | `Goals.ID / .Price / .Currency` | Array | Достигнутые цели, цена и валюта |
-| `Sign` | Int8 | +1 вставка / −1 отмена (CollapsingMergeTree) |
+| `Sign` | Int8 | +1 вставка / −1 отмена |
 
 ### `visits_prepared`
 Промежуточная таблица. Один ряд = один визит. Пересоздаётся при каждом запуске.
@@ -177,16 +179,20 @@ attribution_results  (ReplacingMergeTree, PARTITION BY goal_id)
 
 **Точка входа:** `functions/transform/handler.py`
 
+Функция обращается к ClickHouse через **HTTP API** (порт 8443 для TLS), используя только стандартную библиотеку Python (`urllib`, `ssl`). Сторонних зависимостей нет.
+
+Пароль ClickHouse никогда не хранится в переменных окружения — функция получает его из Lockbox в runtime через IAM-токен метадата-сервиса.
+
 Переменные окружения (задаются через Terraform):
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|--------------|
 | `CLICKHOUSE_HOST` | Хост ClickHouse | — (обязательно) |
-| `CLICKHOUSE_PORT` | Порт нативного протокола | 9440 (TLS) / 9000 |
+| `CLICKHOUSE_HTTP_PORT` | HTTPS-порт ClickHouse HTTP API | `8443` (TLS) / `8123` |
 | `CLICKHOUSE_DB` | База данных | `default` |
 | `CLICKHOUSE_USER` | Пользователь | `default` |
-| `CLICKHOUSE_PASSWORD` | Пароль | — (обязательно) |
 | `CLICKHOUSE_TLS` | Использовать TLS (`1`/`0`) | `1` |
+| `LOCKBOX_SECRET_ID` | ID секрета Lockbox с паролем ClickHouse | — (обязательно) |
 | `COUNTER_ID` | Номер счётчика Метрики | — (обязательно) |
 | `GOAL_ID` | ID цели конверсии | — (обязательно) |
 | `HALF_LIFE_DAYS` | Полураспад Time Decay (дней) | `7.0` |
@@ -426,6 +432,20 @@ Cloud Function  ──── IAM token (metadata) ──▶ Lockbox API
 | Пароль ClickHouse | Обновить в Lockbox вручную **и** `terraform apply` |
 | Новый `goal_id` | Обновить `terraform.tfvars`, `terraform apply` |
 
+> **Примечание о деплое функции.** Если Terraform не подхватывает изменения кода (плановый hash совпадает со старым),
+> создайте версию функции вручную через YC CLI:
+> ```bash
+> cd functions/transform
+> zip -r /tmp/fn.zip .
+> yc serverless function version create \
+>   --function-id <function_id> \
+>   --runtime python311 \
+>   --entrypoint handler.handler \
+>   --memory 512m \
+>   --execution-timeout 10m \
+>   --source-path /tmp/fn.zip
+> ```
+
 ---
 
 ### Удаление
@@ -438,10 +458,30 @@ terraform destroy
 
 ---
 
+## Совместимость и известные особенности
+
+### YC Data Transfer создаёт `VersionedCollapsingMergeTree`
+Трансфер создаёт таблицу `visits_raw` с движком `VersionedCollapsingMergeTree(Sign, VisitVersion)`, а не `CollapsingMergeTree`. Схема в `sql/01_schema.sql` учитывает это. Поле для анонимизированного ID посетителя называется `CounterUserIDHash` (не `UserIDHash`).
+
+### ClickHouse 25.x: изменение типа `UInt64 - UInt64`
+Начиная с ClickHouse 25.x, выражение `UInt64 - UInt64` возвращает `Int64`. Это ломает конструкцию `if(cond, toUInt64(0), UInt64 - UInt64)` с ошибкой:
+```
+Code: 386. DB::Exception: There is no supertype for types UInt64, Int64
+```
+Все `toUInt64(0)` в `if`-выражениях рядом с арифметикой `UInt64-UInt64` заменены на `toInt64(0)` (см. `03_combine_visits.sql` и `_VISIT_MAX_TIMEDIFF_QUERY` в `handler.py`).
+
+### Точки с запятой в `-- комментариях` SQL
+Парсер `_split_statements()` в `handler.py` разбивает SQL-файл на отдельные выражения по символу `;`. Точки с запятой внутри `-- строчных комментариев` игнорируются. Не добавляйте `;` внутри `--`-комментариев в SQL-файлах функции — это приведёт к ошибке `Code: 62. DB::Exception: Empty query`.
+
+### ClickHouse: HTTP API вместо native TCP
+Функция обращается к ClickHouse через HTTPS-порт `8443` (HTTP API), а не через нативный TCP (`9440`). Это позволяет избежать зависимостей от `clickhouse-driver` и обойти баг, при котором драйвер неправильно обнаруживал `INSERT` в SQL-файлах с комментариями в начале, обрезал запрос и отправлял пустую строку на сервер.
+
+---
+
 ## Статус разработки
 
 - [x] **Part A** — Ядро трансформаций (SQL + Cloud Function + тесты)
-- [x] **Part B** — Terraform-модуль
+- [x] **Part B** — Terraform-модуль (протестирован end-to-end на реальном кластере YC)
 - [ ] **Part C** — Выбор цели конверсии (Marketplace wizard)
 - [ ] **Part D** — DataLens-дашборд
 - [ ] **Part E** — Упаковка в Marketplace

@@ -32,10 +32,10 @@ variable "clickhouse_host" {
   type        = string
 }
 
-variable "clickhouse_port" {
-  description = "Порт нативного протокола ClickHouse"
+variable "clickhouse_http_port" {
+  description = "HTTP(S)-порт ClickHouse (8443 для TLS, 8123 для plain)"
   type        = number
-  default     = 9440
+  default     = 8443
 }
 
 variable "clickhouse_db" {
