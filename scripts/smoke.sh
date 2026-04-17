@@ -94,11 +94,14 @@ for table in visits_prepared visits_combined attribution_results; do
 done
 
 hdr "Attribution sanity check (4 models for goal=$GOAL_ID)"
-MODELS="$(ch "SELECT attribution_type, count(), round(sum(conversions),2) AS c \
-              FROM attribution_results FORMAT TSV")"
+MODELS="$(ch "SELECT attribution_type, count() AS rows, round(sum(conversions),2) AS conv
+              FROM attribution_results
+              GROUP BY attribution_type
+              ORDER BY attribution_type
+              FORMAT PrettyCompactNoEscapes")"
 echo "$MODELS"
-n_models="$(echo "$MODELS" | wc -l)"
-[ "$n_models" -eq 4 ] || warn "expected 4 attribution_type rows, got $n_models"
+n_models="$(ch "SELECT countDistinct(attribution_type) FROM attribution_results" | tr -d '\n')"
+[ "$n_models" -eq 4 ] || warn "expected 4 attribution_type values, got $n_models"
 
 hdr "Top 5 sources by last_touch conversions"
 ch "SELECT source_code, round(sum(conversions),2) AS conv
