@@ -43,7 +43,7 @@ pytestmark = pytest.mark.integration
 
 _INSERT_VISITS = """
 INSERT INTO visits_raw
-(CounterID, UserIDHash, VisitID, StartDate, UTCStartTime, Duration, VisitVersion,
+(CounterID, CounterUserIDHash, VisitID, StartDate, UTCStartTime, Duration, VisitVersion,
  `TrafficSource.Model`, `TrafficSource.ID`, `TrafficSource.StartTime`,
  `TrafficSource.SearchEngineID`, `TrafficSource.AdvEngineID`,
  `TrafficSource.SocialSourceNetworkID`, `TrafficSource.RecommendationSystemID`,

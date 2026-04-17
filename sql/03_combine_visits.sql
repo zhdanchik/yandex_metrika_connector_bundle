@@ -16,8 +16,8 @@
 --
 -- Algorithm (identical to original):
 --   1. Create '2_VISIT' events for each real visit.
---   2. Find consecutive visit pairs where gap > visit_max_timediff;
---      insert a '0_NULL' sentinel timed at gap_start + visit_max_timediff.
+--   2. Find consecutive visit pairs where gap > visit_max_timediff
+--      and insert a '0_NULL' sentinel timed at gap_start + visit_max_timediff.
 --   3. Insert a final '0_NULL' sentinel at max(UTCStartTime)+visit_max_timediff
 --      for every user (closes the last session).
 --   4. Sort all events by (UTCStartTime, EventType) — '0_NULL' < '2_VISIT'
@@ -33,8 +33,6 @@
 -- all users in a single pass. For very large counters (>10M visits/day)
 -- consider chunking the INSERT in handler.py.
 -- ============================================================
-
-ALTER TABLE visits_combined DROP PARTITION {goal_id};
 
 INSERT INTO visits_combined
     (goal_id, CounterID, UserID,
@@ -174,7 +172,7 @@ FROM
                         arraySlice(
                             arrayMap(
                                 y -> if(y = 1,
-                                    toUInt64(0),
+                                    toInt64(0),
                                     toUInt64(utc_times[y]) - toUInt64(utc_times[y - 1])
                                 ),
                                 indexes

@@ -10,3 +10,7 @@ terraform/tfplan
 *.tfstate
 *.tfstate.backup
 /tmp/*.zip
+
+# Yandex Cloud CA certificate — download before running terraform apply:
+#   curl -o functions/transform/CA.pem https://storage.yandexcloud.net/cloud-certs/CA.pem
+functions/transform/CA.pem

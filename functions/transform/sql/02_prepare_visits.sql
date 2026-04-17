@@ -34,9 +34,6 @@
 --   11 QR        По QR коду                    → "11"
 -- ============================================================
 
--- Fully rebuild for this (counter, goal) pair each run.
-TRUNCATE TABLE visits_prepared;
-
 INSERT INTO visits_prepared
     (CounterID, UserID, VisitID, StartDate, UTCStartTime, Duration, SourceCode, Conversions, GoalRevenueCur)
 
@@ -47,7 +44,7 @@ WITH
 flat AS (
     SELECT
         CounterID,
-        UserIDHash                                                                       AS UserID,
+        CounterUserIDHash                                                                AS UserID,
         VisitID,
         StartDate,
         argMax(UTCStartTime, VisitVersion)                                               AS UTCStartTime,
@@ -100,7 +97,7 @@ flat AS (
         ))) / 1e6                                                                        AS GoalRevenueCur
     FROM visits_raw
     WHERE CounterID = {counter_id}
-    GROUP BY CounterID, UserIDHash, VisitID, StartDate
+    GROUP BY CounterID, CounterUserIDHash, VisitID, StartDate
     HAVING sum(Sign) > 0
 )
 

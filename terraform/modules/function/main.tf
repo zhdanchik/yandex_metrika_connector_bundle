@@ -74,7 +74,7 @@ resource "yandex_function" "main" {
   environment = {
     LOCKBOX_SECRET_ID = var.lockbox_secret_id
     CLICKHOUSE_HOST   = var.clickhouse_host
-    CLICKHOUSE_PORT   = tostring(var.clickhouse_port)
+    CLICKHOUSE_HTTP_PORT = tostring(var.clickhouse_http_port)
     CLICKHOUSE_DB     = var.clickhouse_db
     CLICKHOUSE_USER   = var.clickhouse_user
     CLICKHOUSE_TLS    = var.clickhouse_tls ? "1" : "0"
