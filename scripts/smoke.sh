@@ -50,23 +50,34 @@ ch() {
 }
 
 hdr "Pre-check: visits_raw"
-RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' 2>/dev/null | tr -d '\n' || echo 0)"
-log "  visits_raw rows: $RAW_COUNT"
-if [ "${RAW_COUNT:-0}" -lt 1 ]; then
+# Swallow stderr but not curl exit status — empty RAW_COUNT ≠ 0 rows means
+# the query itself failed, and we should fall back to the transfer table.
+RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' 2>/dev/null || echo "")"
+RAW_COUNT="$(printf '%s' "$RAW_COUNT" | tr -d '\n')"
+log "  visits_raw rows: ${RAW_COUNT:-<query failed>}"
+if [ -z "$RAW_COUNT" ] || [ "$RAW_COUNT" -lt 1 ]; then
   # YC Data Transfer creates the populated table as 'visits_<transfer_id>'.
-  # Take the transfer id directly from terraform output — no heuristic on
-  # table names needed.
+  # It SHOULD be in $CH_DB (set via clickhouse_target.database), but verify
+  # via system.tables in case YC put it somewhere else.
   [ -n "$TRANSFER_ID" ] || die "transfer_id missing from terraform output — did apply finish?"
-  CANDIDATE="visits_${TRANSFER_ID}"
-  warn "visits_raw empty; using transfer-populated table: $CANDIDATE"
-  warn "dropping empty visits_raw table and re-creating as view → $CANDIDATE"
+  CANDIDATE_NAME="visits_${TRANSFER_ID}"
+  log "looking up $CANDIDATE_NAME in system.tables"
+  LOCATION="$(ch "SELECT database FROM system.tables WHERE name='$CANDIDATE_NAME' FORMAT TSV" 2>/dev/null | tr -d '\n' || true)"
+  if [ -z "$LOCATION" ]; then
+    warn "table $CANDIDATE_NAME not found anywhere — dumping system.tables for diagnosis:"
+    ch "SELECT database, name FROM system.tables WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA') ORDER BY database, name FORMAT PrettyCompactNoEscapes" || true
+    die "transfer table $CANDIDATE_NAME missing — check yc datatransfer transfer get $TRANSFER_ID"
+  fi
+  FQ_CANDIDATE="${LOCATION}.${CANDIDATE_NAME}"
+  warn "transfer table found at: $FQ_CANDIDATE"
+  warn "dropping empty visits_raw and re-creating as view → $FQ_CANDIDATE"
   # The existing visits_raw is a TABLE (from sql/01_schema.sql), not a view.
   # CREATE OR REPLACE VIEW would fail against a table — drop + create.
   ch "DROP TABLE IF EXISTS visits_raw" > /dev/null
-  ch "CREATE VIEW visits_raw AS SELECT * FROM $CANDIDATE" > /dev/null
+  ch "CREATE VIEW visits_raw AS SELECT * FROM $FQ_CANDIDATE" > /dev/null
   RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' | tr -d '\n')"
   log "  visits_raw (via view) rows: $RAW_COUNT"
-  [ "$RAW_COUNT" -gt 0 ] || die "view still empty — transfer may not have finished"
+  [ "$RAW_COUNT" -gt 0 ] || die "view still empty — transfer may have succeeded with 0 rows"
 fi
 
 hdr "Invoking Cloud Function"
