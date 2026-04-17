@@ -53,7 +53,7 @@ FROM (
         arraySlice(
             arrayMap(
                 y -> if(y = 1,
-                    toUInt64(0),
+                    toInt64(0),
                     toUInt64(utc_times[y]) - toUInt64(utc_times[y - 1])
                 ),
                 indexes
