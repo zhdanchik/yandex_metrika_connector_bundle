@@ -132,24 +132,16 @@ cleanup_policy: CLICKHOUSE_CLEANUP_POLICY_DISABLED
 EOF
 
 hdr "Creating endpoints"
-# Note: yc CLI accepts both 'create-X-source' and 'create --X-source-from-file'
-# variants depending on version; we prefer the explicit subcommand when available.
 log "  source: Yandex Metrika"
-SRC_ID="$( { yc datatransfer endpoint create-metrika-source \
+SRC_ID="$(yc datatransfer endpoint create metrika-source \
   --folder-id "$FOLDER_ID" --name "$SOURCE_NAME" \
-  --settings-from-file "$SRC_SPEC" --format json 2>/dev/null \
-  || yc datatransfer endpoint create \
-       --folder-id "$FOLDER_ID" --name "$SOURCE_NAME" \
-       --metrika-source-from-file "$SRC_SPEC" --format json; } | jq -r .id)"
+  --settings-from-file "$SRC_SPEC" --format json | jq -r .id)"
 log "    id=$SRC_ID"
 
 log "  target: Managed ClickHouse"
-TGT_ID="$( { yc datatransfer endpoint create-clickhouse-target \
+TGT_ID="$(yc datatransfer endpoint create clickhouse-target \
   --folder-id "$FOLDER_ID" --name "$TARGET_NAME" \
-  --settings-from-file "$TGT_SPEC" --format json 2>/dev/null \
-  || yc datatransfer endpoint create \
-       --folder-id "$FOLDER_ID" --name "$TARGET_NAME" \
-       --clickhouse-target-from-file "$TGT_SPEC" --format json; } | jq -r .id)"
+  --settings-from-file "$TGT_SPEC" --format json | jq -r .id)"
 log "    id=$TGT_ID"
 
 hdr "Creating transfer (SNAPSHOT_ONLY)"
