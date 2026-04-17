@@ -94,7 +94,11 @@ for table in visits_prepared visits_combined attribution_results; do
 done
 
 hdr "Attribution sanity check (4 models for goal=$GOAL_ID)"
-MODELS="$(ch "SELECT attribution_type, count() AS rows, round(sum(conversions),2) AS conv
+MODELS="$(ch "SELECT attribution_type,
+                     count()                      AS rows,
+                     round(sum(visits), 2)        AS visits,
+                     round(sum(conversions), 2)   AS conv,
+                     round(sum(revenue), 2)       AS revenue
               FROM attribution_results
               GROUP BY attribution_type
               ORDER BY attribution_type
@@ -103,13 +107,46 @@ echo "$MODELS"
 n_models="$(ch "SELECT countDistinct(attribution_type) FROM attribution_results" | tr -d '\n')"
 [ "$n_models" -eq 4 ] || warn "expected 4 attribution_type values, got $n_models"
 
-hdr "Top 5 sources by last_touch conversions"
-ch "SELECT source_code, round(sum(conversions),2) AS conv
-    FROM attribution_results
-    WHERE attribution_type='last_touch'
-    GROUP BY source_code
-    ORDER BY conv DESC
-    LIMIT 5
-    FORMAT PrettyCompactNoEscapes"
+# Cross-model invariant: sum(visits) should be equal across all 4 models
+# (each chain contributes 1 visit total, split across its touches in
+# linear/time_decay but still summing to 1 per chain).
+DISTINCT_VISIT_TOTALS="$(ch "
+  SELECT countDistinct(round(s, 2)) FROM (
+    SELECT sum(visits) AS s FROM attribution_results GROUP BY attribution_type
+  )" | tr -d '\n')"
+if [ "$DISTINCT_VISIT_TOTALS" = "1" ]; then
+  ok "cross-model invariant holds: sum(visits) identical across models"
+else
+  warn "sum(visits) differs across models — $DISTINCT_VISIT_TOTALS distinct totals"
+fi
+
+# If the goal has any conversions, rank by them.  If not (e.g. an
+# intentionally unreachable goal being used as a smoke placeholder),
+# rank by visits instead — more informative than "top 5 zeros".
+TOTAL_CONV="$(ch "SELECT sum(conversions) FROM attribution_results
+                  WHERE attribution_type='last_touch'" | tr -d '\n ')"
+if [ "${TOTAL_CONV%.*}" != "0" ] 2>/dev/null && [ -n "$TOTAL_CONV" ]; then
+  hdr "Top 5 last_touch sources by conversions"
+  ch "SELECT source_code,
+             round(sum(conversions), 2) AS conv,
+             round(sum(visits), 2)       AS visits
+      FROM attribution_results
+      WHERE attribution_type='last_touch'
+      GROUP BY source_code
+      ORDER BY conv DESC
+      LIMIT 5
+      FORMAT PrettyCompactNoEscapes"
+else
+  hdr "Top 5 last_touch sources by visits (no conversions for goal=$GOAL_ID)"
+  ch "SELECT source_code,
+             round(sum(visits), 2)       AS visits,
+             round(sum(conversions), 2) AS conv
+      FROM attribution_results
+      WHERE attribution_type='last_touch'
+      GROUP BY source_code
+      ORDER BY visits DESC
+      LIMIT 5
+      FORMAT PrettyCompactNoEscapes"
+fi
 
 ok "Smoke test passed."
