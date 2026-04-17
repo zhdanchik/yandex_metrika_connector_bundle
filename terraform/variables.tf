@@ -18,17 +18,29 @@ variable "subnet_id" {
 }
 
 # ──────────────────────────────────────────────────────────────
+# Metrika source endpoint (создаётся вручную в YC Console)
+# ──────────────────────────────────────────────────────────────
+
+variable "metrika_source_endpoint_id" {
+  description = <<EOT
+ID заранее созданного в YC Console Metrika source endpoint (формат dte...).
+
+Создаётся один раз:
+  Data Transfer → Endpoints → Create endpoint → Source → Metrica.
+  Укажи counter_id, OAuth-токен Метрики, период выгрузки.
+
+Причина ручного шага: поле `period` (диапазон дат snapshot) — write-only
+в публичном API YC, его нельзя задать через Terraform/SDK/CLI.
+EOT
+  type        = string
+}
+
+# ──────────────────────────────────────────────────────────────
 # Секреты (чувствительные, не попадают в лог terraform plan)
 # ──────────────────────────────────────────────────────────────
 
 variable "clickhouse_password" {
   description = "Пароль пользователя ClickHouse"
-  type        = string
-  sensitive   = true
-}
-
-variable "metrika_oauth_token" {
-  description = "OAuth-токен Яндекс Метрики для Data Transfer"
   type        = string
   sensitive   = true
 }
@@ -81,7 +93,7 @@ variable "cron_expression" {
 }
 
 variable "ca_cert_path" {
-  description = "Путь к Yandex CA-сертификату для TLS-проверки при DDL-провизионинге. Скачайте через scripts/prepare.sh."
+  description = "Путь к Yandex CA-сертификату для TLS-проверки при DDL-провизионинге. Скачивается через scripts/prepare.sh."
   type        = string
   default     = "../functions/transform/CA.pem"
 }

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Full end-to-end run from a clean folder:
-#   1. cleanup    — delete every project resource (manual or terraform-made)
-#   2. deploy     — terraform apply (preflight runs prepare.sh inside)
-#   3. transfer   — create + activate Data Transfer (CLI fallback)
-#   4. smoke      — invoke function + verify pipeline tables + 4 models
+#   1. cleanup — delete every project resource (manual or terraform-made)
+#   2. deploy  — terraform apply: creates NAT + DT endpoints + transfer,
+#                synchronously activates SNAPSHOT_ONLY transfer to completion
+#   3. smoke   — invoke function + verify pipeline tables + 4 models
 #
 # Set ASSUME_YES=1 to skip confirmations.
 
@@ -13,16 +13,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 start=$(date +%s)
 
-hdr "STAGE 1/4 — cleanup"
+hdr "STAGE 1/3 — cleanup"
 "$SCRIPT_DIR/cleanup.sh"
 
-hdr "STAGE 2/4 — deploy"
+hdr "STAGE 2/3 — deploy (terraform apply, includes transfer snapshot)"
 "$SCRIPT_DIR/deploy.sh"
 
-hdr "STAGE 3/4 — data transfer"
-"$SCRIPT_DIR/transfer.sh"
-
-hdr "STAGE 4/4 — smoke test"
+hdr "STAGE 3/3 — smoke test"
 "$SCRIPT_DIR/smoke.sh"
 
 end=$(date +%s)

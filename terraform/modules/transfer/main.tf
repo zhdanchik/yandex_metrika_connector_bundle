@@ -6,59 +6,13 @@ resource "yandex_resourcemanager_folder_iam_member" "ch_editor" {
 }
 
 # ──────────────────────────────────────────────────────────────
-# Endpoint: источник — Яндекс Метрика Logs API
-#
-# OAuth-токен берётся из Lockbox через secret_ref — в Terraform
-# state токен не попадает.
-# ──────────────────────────────────────────────────────────────
-resource "yandex_datatransfer_endpoint" "source" {
-  name      = "${var.name}-source"
-  folder_id = var.folder_id
-
-  settings {
-    metrika_source {
-      counter_ids = [var.counter_id]
-
-      token {
-        raw = var.metrika_oauth_token
-      }
-
-      streams {
-        type = "METRIKA_STREAM_TYPE_VISITS"
-        # CounterID, VisitID, StartDate — implicit, API не возвращает их в списке.
-        # Порядок соответствует тому, что API возвращает при чтении (alphabetic по группам).
-        columns = [
-          "CounterUserIDHash",
-          "UTCStartTime",
-          "Duration",
-          "TrafficSource.Model",
-          "TrafficSource.ID",
-          "TrafficSource.StartTime",
-          "TrafficSource.SearchEngineID",
-          "TrafficSource.AdvEngineID",
-          "TrafficSource.SocialSourceNetworkID",
-          "TrafficSource.RecommendationSystemID",
-          "TrafficSource.MessengerID",
-          "TrafficSource.ClickBannerID",
-          "TrafficSource.ClickTargetType",
-          "Goals.ID",
-          "Goals.Serial",
-          "Goals.EventTime",
-          "Goals.Price",
-          "Goals.Currency",
-          "EPurchase.ID",
-          "EPurchase.Revenue",
-        ]
-      }
-    }
-  }
-}
-
-# ──────────────────────────────────────────────────────────────
 # Endpoint: приёмник — Managed ClickHouse
 #
-# Пароль берётся из Lockbox через secret_ref.
-# Шардирование по CounterUserIDHash — равномерное распределение визитов.
+# Источник (Яндекс Метрика) создаётся ПОЛЬЗОВАТЕЛЕМ в UI один раз
+# и передаётся сюда как var.metrika_source_endpoint_id. Причина —
+# поле `period` (диапазон дат snapshot) write-only в публичном
+# API YC: нет ни в proto, ни в Terraform-провайдере, ни в SDK,
+# ни в yc CLI. UI сохраняет его через приватный API.
 # ──────────────────────────────────────────────────────────────
 resource "yandex_datatransfer_endpoint" "target" {
   name      = "${var.name}-target"
@@ -78,33 +32,35 @@ resource "yandex_datatransfer_endpoint" "target" {
         }
       }
 
+      # Шардирование по CounterUserIDHash — равномерное распределение визитов.
       sharding {
         column_value_hash {
           column_name = "CounterUserIDHash"
         }
       }
 
-      # Не очищать таблицу перед репликацией — CollapsingMergeTree
-      # обрабатывает дубли и отмены через знак Sign.
+      # Не очищать таблицу перед репликацией — VersionedCollapsingMergeTree
+      # обрабатывает дубли и отмены через Sign/VisitVersion.
       cleanup_policy = "CLICKHOUSE_CLEANUP_POLICY_DISABLED"
     }
   }
 }
 
 # ──────────────────────────────────────────────────────────────
-# Transfer: Snapshot + Increment
-#
-# Начальный снимок + непрерывная репликация новых визитов.
-# Запускается вручную после terraform apply или через UI YC.
+# Transfer: SNAPSHOT_ONLY (Metrika Logs API пакетный, инкремент не поддержан)
 # ──────────────────────────────────────────────────────────────
 resource "yandex_datatransfer_transfer" "main" {
   name      = var.name
   folder_id = var.folder_id
-  source_id = yandex_datatransfer_endpoint.source.id
+  source_id = var.metrika_source_endpoint_id
   target_id = yandex_datatransfer_endpoint.target.id
-  # Metrika Logs API is batch-based; SNAPSHOT_AND_INCREMENT is not supported.
-  # Run repeated SNAPSHOT_ONLY transfers on a schedule to pull new data.
   type      = "SNAPSHOT_ONLY"
+
+  # Активировать синхронно: terraform apply ждёт, пока snapshot
+  # фактически завершится. Для SNAPSHOT_ONLY transfer'а это значит
+  # «данные загружены в ClickHouse» — smoke.sh сразу после apply
+  # увидит заполненную таблицу visits_<transfer_id>.
+  on_create_activate_mode = "sync_activate"
 
   depends_on = [yandex_resourcemanager_folder_iam_member.ch_editor]
 }

@@ -2,6 +2,9 @@
 # Run terraform init + apply non-interactively.
 # Reuses local terraform state if present.
 #
+# NAT gateway, Data Transfer endpoints and transfer are all managed by
+# Terraform — no out-of-band setup scripts needed.
+#
 # Use scripts/cleanup.sh first if you want a clean slate.
 
 set -euo pipefail
@@ -35,12 +38,7 @@ refresh_yc_token
 terraform -chdir="$TF_DIR" apply -input=false tfplan
 rm -f "$TF_DIR/tfplan"
 
-# Cloud Function lives inside the subnet via connectivity block, and
-# needs egress to Lockbox / the public internet for secrets + CA
-# bootstrap.  Ensure the subnet has a Cloud NAT gateway attached.
-"$SCRIPT_DIR/ensure_nat.sh"
-
 hdr "Outputs"
 terraform -chdir="$TF_DIR" output
 
-ok "Deploy complete.  Next: scripts/transfer.sh to create+activate Data Transfer."
+ok "Deploy complete.  Transfer is created (SNAPSHOT_ONLY) — activate it in YC Console or yc CLI, then run scripts/smoke.sh."
