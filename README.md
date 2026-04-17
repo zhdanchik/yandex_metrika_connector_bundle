@@ -237,7 +237,7 @@ pytest --integration tests/test_integration.py -v
 | Yandex Cloud CLI (`yc`) | последняя |
 | `clickhouse-client` | ≥ 21.1 (для применения DDL-схемы) |
 | `jq` | для парсинга JSON-ответов yc |
-| `python3` | для парсинга HCL и пары dev-утилит (`s3_empty.py`) |
+| `python3` | для парсинга HCL в lib.sh (никаких pip-зависимостей) |
 | `curl` | для скачивания CA и HTTPS-запросов к ClickHouse в smoke-тесте |
 
 > Python SDK `yandexcloud` **больше не нужен**: с переездом Data Transfer в Terraform-модуль все endpoint'ы создаются через провайдер.
@@ -372,9 +372,8 @@ trigger_id            = "..."
 |--------|----------|
 | `scripts/lib.sh` | Общие хелперы: логирование (`log`/`ok`/`warn`/`die`/`hdr`), `require_bin`, `tfvar_get` (HCL-парсер), `confirm`, `refresh_yc_token` (перед каждым терраформ/yc-вызовом — IAM-токены живут ~12ч) |
 | `scripts/prepare.sh` | Preflight: проверяет `yc`/`terraform`/`clickhouse-client`/`jq`/`python3`/`curl`; валидирует `terraform.tfvars` (нет placeholder'ов + все обязательные ключи включая `metrika_source_endpoint_id`); скачивает Yandex CA → `functions/transform/CA.pem`; синхронизирует `sql/*.sql` в бандл функции (источник истины — `sql/`) |
-| `scripts/cleanup.sh` | По префиксу имени (`metrika-attribution-*`) удаляет: триггеры, функции, Data Transfer'ы + endpoint'ы, MDB-кластеры (снимает `deletion_protection`), Lockbox-секреты, Object Storage бакет (через `s3_empty.py`), сервисные аккаунты; чистит локальный `terraform.tfstate`. Автоматически читает `metrika_source_endpoint_id` из tfvars и сохраняет этот UI-source от удаления (можно переопределить через `KEEP_SOURCE_ID`) |
-| `scripts/s3_empty.py` | Опустошает Object Storage бакет через AWS SigV4 на чистой Python stdlib (без `aws-cli`). Поднимает одноразовый static access key через `yc iam access-key create` и удаляет его после |
-| `scripts/deploy.sh` | Вызывает `prepare.sh`, затем `terraform init → plan → apply`. Всё — Terraform: NAT, DT endpoint, transfer (c sync-активацией snapshot'а). Никаких out-of-band шагов после apply |
+| `scripts/cleanup.sh` | По префиксу имени (`metrika-attribution-*`) удаляет: триггеры, функции, Data Transfer'ы + endpoint'ы, MDB-кластеры (снимает `deletion_protection`), Lockbox-секреты, route-table'ы + VPC gateway'и (с отвязкой подсети), Object Storage бакет (через `yc storage s3api` на IAM-токене пользователя — без статик-ключей), сервисные аккаунты; чистит локальный `terraform.tfstate`. Автоматически читает `metrika_source_endpoint_id` из tfvars и сохраняет этот UI-source от удаления (можно переопределить через `KEEP_SOURCE_ID`) |
+| `scripts/deploy.sh` | Вызывает `prepare.sh`, затем `terraform init → plan → apply`. Всё — Terraform: NAT, DT endpoint, transfer (активируется + поллится до DONE через `null_resource` в модуле). Никаких out-of-band шагов после apply |
 | `scripts/smoke.sh` | Invoke функции + `curl --cacert CA.pem https://…:8443` к ClickHouse. Берёт `transfer_id` из `terraform output` и, если `visits_raw` пустая, создаёт `VIEW visits_raw AS SELECT * FROM visits_<transfer_id>`. Проверяет все пайплайн-таблицы, кросс-модельный инвариант (`sum(visits)` одинакова у всех 4 моделей), печатает топ-5 каналов |
 | `scripts/e2e.sh` | Оркестратор: cleanup → deploy → smoke |
 
@@ -479,7 +478,7 @@ terraform destroy
 
 - **Секреты хранятся в Lockbox.** `clickhouse_password` попадает в Lockbox из `terraform.tfvars` (или `TF_VAR_*`) и извлекается функцией через IAM-токен. В env-переменных функции пароля нет. OAuth-токен Метрики в Lockbox не хранится вовсе — он вводится один раз в UI при создании Metrika source endpoint'а и остаётся на стороне YC Data Transfer.
 - **TLS обязателен с проверкой сертификата.** Функция использует HTTPS (`8443`) с проверкой по Yandex CA (`functions/transform/CA.pem`, скачивается `scripts/prepare.sh` один раз и бандлится в zip — не TOFU на cold start). DDL-провизионер `null_resource.schema` использует `verificationMode=strict` с этим же CA.
-- **Пароли не в cmdline.** ClickHouse DDL-провизионер получает пароль через временный XML-конфиг с `chmod 600` — не виден в `ps aux`. `smoke.sh` отправляет пароль в HTTP-заголовке `X-ClickHouse-Key` поверх TLS. `s3_empty.py` — через AWS-env с одноразовым ключом. В Data Transfer endpoint'е пароль идёт через провайдер (sensitive-переменная, не пишется в tfstate открытым текстом).
+- **Пароли не в cmdline.** ClickHouse DDL-провизионер получает пароль через временный XML-конфиг с `chmod 600` — не виден в `ps aux`. `smoke.sh` отправляет пароль в HTTP-заголовке `X-ClickHouse-Key` поверх TLS. В Data Transfer endpoint'е пароль идёт через провайдер (sensitive-переменная, не пишется в tfstate открытым текстом). `cleanup.sh` ходит в Object Storage через `yc storage s3api` с твоим же IAM-токеном — без статик-ключей.
 - **IAM-токены обновляются.** `scripts/lib.sh:refresh_yc_token` делает `yc iam create-token` перед каждым `terraform`/`yc`-вызовом (добавлено после инцидента с истечением токена посреди `apply`). Работает с OAuth/SA-key профилем; «сырой» IAM-токен в `yc config` → не сможет обновиться, нужен `yc init`.
 - **Секреты из tfvars никогда не в git.** `.gitignore` исключает `terraform.tfvars`, `*.tfstate*`, `CA.pem`.
 - **Сеть.** По умолчанию MDB-кластер имеет публичный IP (`assign_public_ip = true`) — нужен для локального DDL-провизионера. Для prod установите `false`, DDL прогоните из VPC (Jump-host). Также рекомендуется задать `security_group_ids` в `module.clickhouse` с whitelist по IP.
@@ -529,7 +528,7 @@ terraform destroy
 | Симптом | Причина и фикс |
 |---------|---------------|
 | `terraform apply`: `The token has expired` | Истёк IAM-токен за время долгого apply. Скрипты уже делают `yc iam create-token` перед каждым вызовом. Если через `scripts/deploy.sh` — просто перезапусти. Если руками — `export YC_TOKEN=$(yc iam create-token)` перед `terraform apply`. |
-| `ERROR: The bucket you tried to delete is not empty.` | `yc storage bucket delete` не умеет force. `cleanup.sh` вызывает `scripts/s3_empty.py` (SigV4 на stdlib) с временным static access key — без `aws-cli`. |
+| `ERROR: The bucket you tried to delete is not empty.` | cleanup.sh чистит объекты и multipart uploads через `yc storage s3api` (который ходит с твоим IAM-токеном, а не со стороннего SA). Если всё равно не удаляется — вручную: `yc storage s3api list-objects --bucket <name>` + `yc storage s3api delete-object --bucket <name> --key <key>`. |
 | `CreateTransfer`: `current metrica source config not suitable for snapshot: period setting required` | Period не задан на Metrika source endpoint'е. Перепроверь в UI, что у endpoint'а по id `metrika_source_endpoint_id` заполнены «Период выгрузки данных: Начало/Конец». |
 | `terraform apply` висит на `yandex_datatransfer_transfer.main` | При `on_create_activate_mode = "sync_activate"` apply ждёт окончания snapshot'а. Для больших счётчиков это 10–30 мин. Проверь прогресс: `yc datatransfer transfer get $(terraform -chdir=terraform output -raw transfer_id)`. |
 | Функция: `Lockbox error: <urlopen error [Errno -3] Temporary failure in name resolution>` | NAT не подключён к подсети, или DNS stale на cold start. `module "network"` должен был навесить route-table — проверь: `yc vpc subnet get --id <id> --format json \| jq .route_table_id`. Retry в `handler.py` должен добить за 2–16с. |
