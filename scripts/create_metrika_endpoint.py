@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 
-API = "https://datatransfer.api.cloud.yandex.net/datatransfer/v1"
+API = "https://datatransfer.api.cloud.yandex.net/data-transfer/v1"
 OP_API = "https://operation.api.cloud.yandex.net/operations"
 
 # Columns we pull from Metrika.  Matches terraform/modules/transfer/main.tf
@@ -59,6 +59,7 @@ def _req(method: str, url: str, body: dict | None = None) -> dict:
     req.add_header("Authorization", f"Bearer {os.environ['YC_TOKEN']}")
     if body is not None:
         req.add_header("Content-Type", "application/json")
+    print(f"  [http] {method} {url}", file=sys.stderr)
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             return json.loads(resp.read())
