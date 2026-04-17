@@ -30,6 +30,7 @@ import sys
 import time
 
 try:
+    import grpc
     import yandexcloud
     from google.protobuf.json_format import ParseDict, ParseError
     from yandex.cloud.datatransfer.v1.endpoint_pb2 import EndpointSettings, Endpoint
@@ -220,6 +221,34 @@ def create_and_activate_transfer(transfer_stub, op_stub, env: dict,
     return transfer_id
 
 
+def _print_ui_instructions(src_id: str, tgt_id: str, env: dict) -> None:
+    sys.stderr.write(
+        "\n"
+        "  ══ Manual step required ══════════════════════════════════════════\n"
+        "\n"
+        "  YC Data Transfer's public proto does NOT expose the 'period' field\n"
+        "  that the backend requires for SNAPSHOT_ONLY Metrika transfers.\n"
+        "  Neither the Python SDK, the yc CLI, nor the Terraform provider can\n"
+        "  set it. The YC UI uses a private API for this.\n"
+        "\n"
+        "  Endpoints ARE created — you only need to wire up the transfer:\n"
+        "\n"
+        f"    1. Open https://console.yandex.cloud/folders/{env['FOLDER_ID']}/data-transfer/transfers\n"
+        f"    2. Click 'Create transfer'\n"
+        f"    3. Source:  pick existing endpoint → id={src_id}\n"
+        f"                (name: {env['SOURCE_NAME']})\n"
+        f"    4. Target:  pick existing endpoint → id={tgt_id}\n"
+        f"                (name: {env['TARGET_NAME']})\n"
+        f"    5. Name:    {env['TRANSFER_NAME']}\n"
+        f"    6. Type:    Snapshot\n"
+        f"    7. Period:  {env['PERIOD_FROM']}  →  {env['PERIOD_TO']}\n"
+        f"    8. Activate the transfer and wait for 'Completed'\n"
+        "\n"
+        "  Then run:  ./scripts/smoke.sh\n"
+        "\n"
+    )
+
+
 def main() -> int:
     env = _require_env(
         "YC_TOKEN", "FOLDER_ID",
@@ -239,12 +268,21 @@ def main() -> int:
     tgt_id = create_clickhouse_target(endpoint_stub, op_stub, env)
     log(f"target endpoint id = {tgt_id}")
 
-    transfer_id = create_and_activate_transfer(
-        transfer_stub, op_stub, env, src_id, tgt_id
-    )
-    # Print the transfer id on stdout — transfer.sh captures it for polling.
-    print(transfer_id)
-    return 0
+    # Try transfer creation; fall back to UI instructions on the known
+    # "period setting required" failure.
+    try:
+        transfer_id = create_and_activate_transfer(
+            transfer_stub, op_stub, env, src_id, tgt_id
+        )
+        print(transfer_id)
+        return 0
+    except grpc.RpcError as exc:
+        detail = getattr(exc, "details", lambda: str(exc))()
+        if "period" in detail.lower():
+            _print_ui_instructions(src_id, tgt_id, env)
+            # stdout empty → transfer.sh detects and prints matching guidance
+            return 0
+        raise
 
 
 if __name__ == "__main__":

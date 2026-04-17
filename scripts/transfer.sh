@@ -72,8 +72,14 @@ export PERIOD_FROM PERIOD_TO
 export CH_CLUSTER_ID CH_DB CH_USER CH_PASSWORD
 export SOURCE_NAME TARGET_NAME TRANSFER_NAME
 
-TRANSFER_ID="$(python3 "$SCRIPT_DIR/setup_transfer.py")"
-[ -n "$TRANSFER_ID" ] || die "setup_transfer.py returned empty transfer id"
+TRANSFER_ID="$(python3 "$SCRIPT_DIR/setup_transfer.py" || true)"
+if [ -z "$TRANSFER_ID" ]; then
+  warn "Automatic transfer creation is not possible on this YC API version."
+  warn "Endpoints are created — follow the UI instructions printed above."
+  warn "After the transfer finishes in the UI, run:  ./scripts/smoke.sh"
+  exit 0
+fi
+
 log "transfer id = $TRANSFER_ID"
 echo "$TRANSFER_ID" > "$TF_DIR/.transfer-id"
 

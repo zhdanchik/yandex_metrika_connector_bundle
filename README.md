@@ -473,6 +473,31 @@ terraform destroy
 
 ---
 
+## Известное ограничение: Data Transfer period настраивается в UI
+
+Поле `period` (диапазон дат для snapshot-загрузки Metrika) **не экспонировано в публичном API YC**:
+- Нет в [публичном proto](https://github.com/yandex-cloud/cloudapi/blob/master/yandex/cloud/datatransfer/v1/endpoint/metrika.proto) (`MetrikaSource`/`MetrikaStream` содержат только `counter_ids`, `token`, `streams: {type, columns}`)
+- Нет в Python SDK `yandexcloud` (SDK генерируется из того же proto)
+- Нет в [Terraform-провайдере](https://github.com/yandex-cloud/terraform-provider-yandex/blob/master/yandex/resource_yandex_datatransfer_endpoint.go) (schema `metrika_source` не содержит date-fields)
+- В `yc` CLI нет подкоманды `create metrika-source` вообще (есть только pg/mysql/mongo/ch/yds)
+
+При этом backend при `CreateTransfer` требует: `current metrica source config not suitable for snapshot: period setting required`. UI решает это через приватный API-эндпоинт.
+
+**Практика**: `scripts/setup_transfer.py` создаёт оба endpoint'а (Metrika source + ClickHouse target) через SDK/gRPC, затем ловит эту ошибку на `CreateTransfer` и печатает пошаговую инструкцию для UI:
+
+```
+1. https://console.yandex.cloud/folders/{folder_id}/data-transfer/transfers → Create transfer
+2. Source endpoint: pick existing → id=<вывод скрипта>
+3. Target endpoint: pick existing → id=<вывод скрипта>
+4. Type: Snapshot
+5. Period: <PERIOD_FROM> → <PERIOD_TO>
+6. Activate
+```
+
+После этого `./scripts/smoke.sh` доделает пайплайн (invoke функции + проверка таблиц).
+
+---
+
 ## Совместимость и известные особенности
 
 ### YC Data Transfer создаёт `VersionedCollapsingMergeTree`
