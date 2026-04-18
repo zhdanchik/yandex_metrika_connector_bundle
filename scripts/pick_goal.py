@@ -276,7 +276,18 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = pathlib.Path(__file__).resolve().parent.parent
     tfvars_path = pathlib.Path(args.tfvars) if args.tfvars else repo_root / "terraform" / "terraform.tfvars"
 
-    counter_id = args.counter_id if args.counter_id is not None else read_counter_id(tfvars_path)
+    # Fail-fast on arg combos before touching tfvars or the network.
+    if args.non_interactive and not args.goal_name:
+        sys.exit("--non-interactive requires --goal-name")
+
+    if args.counter_id is not None:
+        counter_id = args.counter_id
+    else:
+        try:
+            counter_id = read_counter_id(tfvars_path)
+        except (FileNotFoundError, ValueError) as e:
+            sys.exit(str(e))
+
     token = _prompt_token()
 
     try:
@@ -294,8 +305,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.goal_name:
         chosen = _find_goal_by_name(goals, args.goal_name)
-    elif args.non_interactive:
-        sys.exit("--non-interactive requires --goal-name")
     else:
         print(f"\nCounter {counter_id}: {len(goals)} goal(s)" + (f" ({hidden} hidden)" if hidden else ""), file=sys.stderr)
         for idx, g in enumerate(goals, start=1):
