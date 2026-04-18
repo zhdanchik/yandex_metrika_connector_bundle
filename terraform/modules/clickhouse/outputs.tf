@@ -10,10 +10,10 @@ output "host" {
 
 output "db_name" {
   description = "Имя базы данных"
-  value       = var.db_name
+  value       = yandex_mdb_clickhouse_database.main.name
 }
 
 output "db_user" {
   description = "Имя пользователя"
-  value       = var.db_user
+  value       = yandex_mdb_clickhouse_user.main.name
 }
