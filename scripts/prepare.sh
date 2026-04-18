@@ -78,4 +78,13 @@ if [ "${CLICKHOUSE_TLS:-1}" = "0" ]; then
   warn "CLICKHOUSE_TLS=0 set in env — TLS WILL BE DISABLED in the function"
 fi
 
+# 6. macOS sleep gotcha: if the laptop suspends mid-apply, the terraform
+# local-exec polling loop pauses with it — the wall-clock of terraform
+# balloons even though the snapshot itself is fast.  Nudge the user.
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ -z "${CAFFEINATED:-}" ]; then
+  warn "macOS detected. Apply takes 15-30 min (cluster + snapshot).  If the Mac"
+  warn "  sleeps, terraform's local-exec polling pauses too.  Consider running"
+  warn "  under caffeinate:   CAFFEINATED=1 caffeinate -is ./scripts/e2e.sh"
+fi
+
 ok "Preflight passed.  Ready for: terraform -chdir=terraform init && terraform -chdir=terraform apply"

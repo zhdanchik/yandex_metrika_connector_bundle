@@ -41,4 +41,4 @@ rm -f "$TF_DIR/tfplan"
 hdr "Outputs"
 terraform -chdir="$TF_DIR" output
 
-ok "Deploy complete.  Transfer is created (SNAPSHOT_ONLY) — activate it in YC Console or yc CLI, then run scripts/smoke.sh."
+ok "Deploy complete.  Transfer is activated and snapshot loaded — run scripts/smoke.sh to verify the pipeline."
