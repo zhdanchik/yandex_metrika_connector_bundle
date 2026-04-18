@@ -13,7 +13,9 @@ subnet_id  = "e9b..."   # yc vpc subnet list
 
 # Яндекс Метрика
 counter_id = 12345678   # URL в интерфейсе Метрики
-goal_id    = 42         # Раздел «Цели» → ID цели
+goal_id    = 42         # Не вписывай вручную: после counter_id запусти
+                        # `python3 ../scripts/pick_goal.py` — он покажет список
+                        # целей счётчика и впишет выбранный id сюда сам.
 
 # Metrika source endpoint (создаётся один раз в YC Console — см. README,
 # раздел «Ручной шаг: Metrika source endpoint»).

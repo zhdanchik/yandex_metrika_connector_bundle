@@ -266,14 +266,22 @@ pytest --integration tests/test_integration.py -v
 
 **OAuth-токен Яндекс Метрики**
 
-1. Перейдите на [oauth.yandex.ru](https://oauth.yandex.ru/) и создайте приложение с правом `metrika:read`.
-2. Сохраните выданный токен — понадобится один раз, когда будете создавать Metrika source endpoint в YC Console (см. раздел «Ручной шаг: Metrika source endpoint»). В Terraform/Lockbox этот токен больше не нужен.
+1. Перейдите на [oauth.yandex.ru](https://oauth.yandex.ru/) и создайте приложение с правом `metrika:write` (именно write — Data Transfer требует этот scope для активации Metrika source endpoint'а; `metrika:read` недостаточно).
+2. Сохраните выданный токен — понадобится дважды:
+   - один раз при создании Metrika source endpoint в YC Console (см. «Ручной шаг: Metrika source endpoint»),
+   - один раз при запуске `scripts/pick_goal.py` (см. ниже). После этого токен нигде не хранится — в Terraform/Lockbox его нет.
 
 **Параметры счётчика и цели**
 
-В интерфейсе Яндекс Метрики найдите:
-- **Номер счётчика** — виден в URL (`metrika.yandex.ru/list/counter/<ID>`)
-- **ID цели** — в разделе «Цели» → кликните на цель → ID в URL
+- **Номер счётчика** — виден в URL интерфейса Метрики (`metrika.yandex.ru/list/counter/<ID>`). Впиши в `terraform.tfvars` как `counter_id`.
+- **ID цели** — не ищи вручную в UI. Запусти `python3 scripts/pick_goal.py` после заполнения `counter_id` — скрипт сходит в Metrika Management API, покажет список целей счётчика с именами/типами и впишет выбранный `goal_id` в `terraform.tfvars`. Токен используется для одного HTTPS-запроса и не персистится.
+
+```bash
+cd terraform/ && cp terraform.tfvars.example terraform.tfvars
+# заполни folder_id, network_id, subnet_id, counter_id, function_bucket_name, clickhouse_password
+python3 ../scripts/pick_goal.py   # интерактивный выбор goal_id
+# или:  METRIKA_OAUTH_TOKEN=xxx python3 ../scripts/pick_goal.py --non-interactive --goal-name "Покупка"
+```
 
 ---
 
@@ -371,6 +379,7 @@ trigger_id            = "..."
 | Скрипт | Действия |
 |--------|----------|
 | `scripts/lib.sh` | Общие хелперы: логирование (`log`/`ok`/`warn`/`die`/`hdr`), `require_bin`, `tfvar_get` (HCL-парсер), `confirm`, `refresh_yc_token` (перед каждым терраформ/yc-вызовом — IAM-токены живут ~12ч) |
+| `scripts/pick_goal.py` | Интерактивный выбор `goal_id`: читает `counter_id` из tfvars, спрашивает OAuth-токен Метрики (`metrika:write`), дёргает `GET /management/v1/counter/{id}/goals`, фильтрует ретаргетинг/engagement-цели, показывает нумерованное меню и переписывает `goal_id` в tfvars. Токен используется один раз и не сохраняется. Флаги: `--non-interactive --goal-name "..."` для автоматизации, `--show-all` чтобы не прятать `depth`/`number`, `--print-only` чтобы не трогать tfvars. Stdlib-only, без pip-зависимостей |
 | `scripts/prepare.sh` | Preflight: проверяет `yc`/`terraform`/`clickhouse-client`/`jq`/`python3`/`curl`; валидирует `terraform.tfvars` (нет placeholder'ов + все обязательные ключи включая `metrika_source_endpoint_id`); скачивает Yandex CA → `functions/transform/CA.pem`; синхронизирует `sql/*.sql` в бандл функции (источник истины — `sql/`) |
 | `scripts/cleanup.sh` | По префиксу имени (`metrika-attribution-*`) удаляет: триггеры, функции, Data Transfer'ы + endpoint'ы, MDB-кластеры (снимает `deletion_protection`), Lockbox-секреты, route-table'ы + VPC gateway'и (с отвязкой подсети), Object Storage бакет (через `yc storage s3api` на IAM-токене пользователя — без статик-ключей), сервисные аккаунты; чистит локальный `terraform.tfstate`. Автоматически читает `metrika_source_endpoint_id` из tfvars и сохраняет этот UI-source от удаления (можно переопределить через `KEEP_SOURCE_ID`) |
 | `scripts/deploy.sh` | Вызывает `prepare.sh`, затем `terraform init → plan → apply`. Всё — Terraform: NAT, DT endpoint, transfer (активируется + поллится до DONE через `null_resource` в модуле). Никаких out-of-band шагов после apply |
@@ -444,7 +453,7 @@ Cloud Function  ──── IAM token (metadata 169.254.169.254) ──▶ Lock
 | Код функции (`functions/transform/`) | `terraform apply` — zip пересобирается автоматически |
 | Схема БД (`sql/01_schema.sql`) | `terraform apply` — `null_resource.schema` перезапускается |
 | Пароль ClickHouse | Обновить в Lockbox вручную **и** `terraform apply` |
-| Новый `goal_id` | Обновить `terraform.tfvars`, `terraform apply` |
+| Новый `goal_id` | `python3 scripts/pick_goal.py` (перепишет tfvars), затем `terraform apply` |
 
 > **Примечание о деплое функции.** Если Terraform не подхватывает изменения кода (плановый hash совпадает со старым),
 > создайте версию функции вручную через YC CLI:
@@ -502,7 +511,7 @@ terraform destroy
    - `https://console.yandex.cloud/folders/<folder_id>/data-transfer/endpoints` → **Создать endpoint**
    - Направление: **Источник**, База: **Metrica**
    - Счётчик: `<counter_id>`
-   - Токен: OAuth-токен Метрики (с правом `metrika:read`)
+   - Токен: OAuth-токен Метрики (с правом `metrika:write` — read недостаточно, DT падает с 403 на активации)
    - **Период выгрузки данных: Начало / Конец**
    - Stream: **Визиты** + нужные поля (см. список ниже)
    - Сохрани — получишь id вида `dte...`
