@@ -29,6 +29,9 @@ tests/
 
 scripts/                     # Dev/test-оркестрация (cleanup / deploy / smoke / e2e) — НЕ едет в Marketplace
 terraform/                   # Инфраструктурный слой (всё для Marketplace-бандла здесь)
+datalens/
+  BUILD_SPEC.md              # Пошаговая инструкция ручной сборки дашборда
+  dashboard.json             # Экспортированный workbook (добавляется после сборки)
 pyproject.toml               # pytest-конфигурация
 ```
 
@@ -564,6 +567,33 @@ Code: 386. DB::Exception: There is no supertype for types UInt64, Int64
 
 ### ClickHouse: HTTP API вместо native TCP
 Функция обращается к ClickHouse через HTTPS-порт `8443` (HTTP API), а не через нативный TCP (`9440`). Это позволяет избежать зависимостей от `clickhouse-driver` и обойти баг, при котором драйвер неправильно обнаруживал `INSERT` в SQL-файлах с комментариями в начале, обрезал запрос и отправлял пустую строку на сервер.
+
+---
+
+## DataLens-дашборд
+
+Terraform включает `access.data_lens = true` на MDB-кластере, что делает его доступным в dropdown'е при создании connection в DataLens. Сам DataLens не провижится через Terraform — `yandex_datalens_connection` в провайдере пока поддерживает только YDB, для ClickHouse соединение создаётся в UI. Кроме того, экспортированный workbook-файл подписан серверным HMAC и не редактируется, так что «сгенерить `dashboard.json` автоматом» невозможно — собирается один раз руками по spec'у, затем экспортируется и коммитится.
+
+### Сборка дашборда (один раз на версию бандла)
+
+Полный пошаговый spec — в [`datalens/BUILD_SPEC.md`](datalens/BUILD_SPEC.md). Коротко:
+
+1. Открыть DataLens → Create collection → Create workbook.
+2. Создать connection на ClickHouse (cluster из dropdown, `raw_sql_level = subselect`).
+3. Построить 2 датасета (`attribution_results` + subselect на `visits_combined`).
+4. Собрать 8 чартов (3 KPI, stacked bar, time series, grouped bar, Sankey через Chart Editor, pivot).
+5. Выложить на dashboard 24-col grid с тремя глобальными фильтрами (Date / Model / Channel).
+6. Export workbook → положить файл как `datalens/dashboard.json`, закоммитить.
+
+### Импорт дашборда (каждый пользователь бандла)
+
+После `terraform apply` → `terraform output datalens_import_url` покажет ссылку вида
+`https://datalens.yandex.cloud/workbooks/import?folderId=<folder_id>`. Пользователь:
+
+1. Открывает URL, загружает `datalens/dashboard.json`.
+2. На шаге «Connection mapping» DataLens сам найдёт созданный им же ClickHouse-кластер в выпадающем списке; нужно выбрать, ввести пароль (тот же что в Lockbox) — и дашборд готов.
+
+> Авто-импорт через internal BFF DataLens (`POST /api/internal/v1/workbooks/import/`) технически возможен, но endpoint приватный, hash-валидированный и без SLA — подпишемся на него только в Part E, когда появится паттерн «ретраим-на-UI при поломке».
 
 ---
 
