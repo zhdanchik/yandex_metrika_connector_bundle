@@ -2,9 +2,8 @@
 # Скопируйте этот файл в terraform.tfvars и заполните значения.
 # terraform.tfvars НЕ коммитить в git (он в .gitignore).
 #
-# Альтернатива для секретов — переменные окружения:
+# Альтернатива для секретов — переменная окружения:
 #   export TF_VAR_clickhouse_password="..."
-#   export TF_VAR_metrika_oauth_token="..."
 # ──────────────────────────────────────────────────────────────
 
 # Yandex Cloud
@@ -16,12 +15,15 @@ subnet_id  = "e9b..."   # yc vpc subnet list
 counter_id = 12345678   # URL в интерфейсе Метрики
 goal_id    = 42         # Раздел «Цели» → ID цели
 
+# Metrika source endpoint (создаётся один раз в YC Console — см. README,
+# раздел «Ручной шаг: Metrika source endpoint»).
+metrika_source_endpoint_id = "dte..."
+
 # Object Storage — имя бакета должно быть глобально уникальным
 function_bucket_name = "metrika-attribution-fn-<random-suffix>"
 
 # Секреты
 clickhouse_password = "StrongP@ssw0rd"
-metrika_oauth_token = "y0_AgAAAA..."
 
 # Опционально — значения по умолчанию можно не указывать
 # name            = "metrika-attribution"

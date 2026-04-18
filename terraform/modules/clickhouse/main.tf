@@ -20,19 +20,32 @@ resource "yandex_mdb_clickhouse_cluster" "main" {
     assign_public_ip = var.assign_public_ip
   }
 
-  database {
-    name = var.db_name
-  }
-
-  user {
-    name     = var.db_user
-    password = var.clickhouse_password
-    permission {
-      database_name = var.db_name
-    }
-  }
+  # database / user управляются отдельными ресурсами ниже —
+  # nested-блоки deprecated начиная с yandex provider 0.199.
 
   security_group_ids = var.security_group_ids
+
+  # После первичного создания кластера terraform может захотеть
+  # «вернуть» user/database, упомянутые API при чтении (drift),
+  # в момент, когда они управляются standalone ресурсами. Игнорим.
+  lifecycle {
+    ignore_changes = [database, user]
+  }
+}
+
+resource "yandex_mdb_clickhouse_database" "main" {
+  cluster_id = yandex_mdb_clickhouse_cluster.main.id
+  name       = var.db_name
+}
+
+resource "yandex_mdb_clickhouse_user" "main" {
+  cluster_id = yandex_mdb_clickhouse_cluster.main.id
+  name       = var.db_user
+  password   = var.clickhouse_password
+
+  permission {
+    database_name = yandex_mdb_clickhouse_database.main.name
+  }
 }
 
 locals {
@@ -43,7 +56,11 @@ locals {
 # Перезапускается только при изменении самой схемы или пересоздании кластера.
 # Требует: clickhouse-client >= 21.1 + CA-сертификат YC в CA_CERT_PATH.
 resource "null_resource" "schema" {
-  depends_on = [yandex_mdb_clickhouse_cluster.main]
+  depends_on = [
+    yandex_mdb_clickhouse_cluster.main,
+    yandex_mdb_clickhouse_database.main,
+    yandex_mdb_clickhouse_user.main,
+  ]
 
   triggers = {
     schema_hash = filemd5("${path.module}/../../../sql/01_schema.sql")

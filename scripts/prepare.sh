@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Preflight before `terraform apply`:
 #   * verify prerequisites (yc, terraform, clickhouse client, jq, python3)
-#   * verify tfvars exists and contains required keys
-#   * download Yandex Cloud root CA (with checksum verification)
+#   * verify tfvars exists and contains required keys (no placeholders)
+#   * download Yandex Cloud root CA (with sanity check)
 #   * sync sql/*.sql into functions/transform/sql/ (single source of truth)
 #
 # Idempotent.  Safe to re-run.
@@ -19,29 +19,17 @@ require_bin terraform yc jq python3 curl
 if ! command -v clickhouse-client >/dev/null 2>&1 && ! command -v clickhouse >/dev/null 2>&1; then
   die "need clickhouse-client or the single-binary 'clickhouse' (for DDL provisioner)"
 fi
-
-# yandexcloud SDK is needed by scripts/create_metrika_endpoint.py.
-# (Metrika Data Transfer endpoint is gRPC-only; yc CLI doesn't cover it.)
-if ! python3 -c 'import yandexcloud, yandex.cloud.datatransfer.v1.endpoint_service_pb2' 2>/dev/null; then
-  warn "  python module 'yandexcloud' not found — required by scripts/transfer.sh"
-  warn "  modern Python (3.12+) blocks system-wide pip (PEP 668).  Use a venv:"
-  warn "    python3 -m venv .venv"
-  warn "    . .venv/bin/activate"
-  warn "    pip install yandexcloud"
-  warn "  then run the scripts from the activated shell."
-  die "aborting so you can install yandexcloud before continuing"
-fi
-ok "  all binaries + Python SDK present"
+ok "  all binaries present"
 
 # 2. tfvars
 log "checking $TFVARS"
 [ -f "$TFVARS" ] || die "$TFVARS not found — copy terraform.tfvars.example and fill it"
 for key in folder_id network_id subnet_id counter_id goal_id \
-           function_bucket_name clickhouse_password metrika_oauth_token; do
+           metrika_source_endpoint_id function_bucket_name clickhouse_password; do
   tfvar_get "$key" >/dev/null 2>&1 || {
     # secrets can be supplied via TF_VAR_*
     case "$key" in
-      clickhouse_password|metrika_oauth_token)
+      clickhouse_password)
         var="TF_VAR_$key"
         [ -n "${!var:-}" ] || die "missing $key in tfvars and \$TF_VAR_$key not set"
         ;;
@@ -54,7 +42,7 @@ done
 ok "  tfvars OK"
 
 # Refuse to proceed if tfvars has placeholder values
-if grep -qE 'b1g\.\.\.|enpb\.\.\.|e9b\.\.\.|StrongP@ssw0rd|y0_AgAAAA\.\.\.' "$TFVARS"; then
+if grep -qE 'b1g\.\.\.|enpb\.\.\.|e9b\.\.\.|dte\.\.\.|StrongP@ssw0rd' "$TFVARS"; then
   die "terraform.tfvars still contains example placeholders — edit before running"
 fi
 
@@ -88,6 +76,15 @@ ok "  SQL synced"
 # 5. Refuse unsafe CLICKHOUSE_TLS
 if [ "${CLICKHOUSE_TLS:-1}" = "0" ]; then
   warn "CLICKHOUSE_TLS=0 set in env — TLS WILL BE DISABLED in the function"
+fi
+
+# 6. macOS sleep gotcha: if the laptop suspends mid-apply, the terraform
+# local-exec polling loop pauses with it — the wall-clock of terraform
+# balloons even though the snapshot itself is fast.  Nudge the user.
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ -z "${CAFFEINATED:-}" ]; then
+  warn "macOS detected. Apply takes 15-30 min (cluster + snapshot).  If the Mac"
+  warn "  sleeps, terraform's local-exec polling pauses too.  Consider running"
+  warn "  under caffeinate:   CAFFEINATED=1 caffeinate -is ./scripts/e2e.sh"
 fi
 
 ok "Preflight passed.  Ready for: terraform -chdir=terraform init && terraform -chdir=terraform apply"

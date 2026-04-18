@@ -30,6 +30,7 @@ CH_DB="$(terraform -chdir="$TF_DIR" output -raw clickhouse_db_name 2>/dev/null |
 CH_USER="$(terraform -chdir="$TF_DIR" output -raw clickhouse_db_user 2>/dev/null || echo analyst)"
 SECRET_ID="$(terraform -chdir="$TF_DIR" output -raw lockbox_secret_id)"
 FN_ID="$(terraform -chdir="$TF_DIR" output -raw function_id)"
+TRANSFER_ID="$(terraform -chdir="$TF_DIR" output -raw transfer_id 2>/dev/null || true)"
 
 log "fetching ClickHouse password from Lockbox"
 CH_PASSWORD="$(yc lockbox payload get --id "$SECRET_ID" --format json \
@@ -49,34 +50,34 @@ ch() {
 }
 
 hdr "Pre-check: visits_raw"
-RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' 2>/dev/null | tr -d '\n' || echo 0)"
-log "  visits_raw rows: $RAW_COUNT"
-if [ "${RAW_COUNT:-0}" -lt 1 ]; then
-  warn "visits_raw is missing or empty — listing all tables to diagnose…"
-  TABLES="$(ch "SELECT name FROM system.tables WHERE database='$CH_DB' AND name NOT LIKE '.%' FORMAT TSV")"
-  echo "$TABLES" | sed 's/^/    /'
-
-  # YC Data Transfer names the populated table 'visits_<transfer_id>'.
-  # Exclude the pipeline's own tables (visits_raw/_prepared/_combined,
-  # attribution_results) so we don't accidentally alias an empty
-  # intermediate table.
-  CANDIDATE="$(echo "$TABLES" \
-    | grep -iE '^visits_' \
-    | grep -vxE 'visits_raw|visits_prepared|visits_combined' \
-    | head -1 | tr -d '\n' || true)"
-  if [ -z "$CANDIDATE" ]; then
-    die "no transfer-populated visits_<id> table found in $CH_DB — run transfer first"
+# Swallow stderr but not curl exit status — empty RAW_COUNT ≠ 0 rows means
+# the query itself failed, and we should fall back to the transfer table.
+RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' 2>/dev/null || echo "")"
+RAW_COUNT="$(printf '%s' "$RAW_COUNT" | tr -d '\n')"
+log "  visits_raw rows: ${RAW_COUNT:-<query failed>}"
+if [ -z "$RAW_COUNT" ] || [ "$RAW_COUNT" -lt 1 ]; then
+  # YC Data Transfer creates the populated table as 'visits_<transfer_id>'.
+  # It SHOULD be in $CH_DB (set via clickhouse_target.database), but verify
+  # via system.tables in case YC put it somewhere else.
+  [ -n "$TRANSFER_ID" ] || die "transfer_id missing from terraform output — did apply finish?"
+  CANDIDATE_NAME="visits_${TRANSFER_ID}"
+  log "looking up $CANDIDATE_NAME in system.tables"
+  LOCATION="$(ch "SELECT database FROM system.tables WHERE name='$CANDIDATE_NAME' FORMAT TSV" 2>/dev/null | tr -d '\n' || true)"
+  if [ -z "$LOCATION" ]; then
+    warn "table $CANDIDATE_NAME not found anywhere — dumping system.tables for diagnosis:"
+    ch "SELECT database, name FROM system.tables WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA') ORDER BY database, name FORMAT PrettyCompactNoEscapes" || true
+    die "transfer table $CANDIDATE_NAME missing — check yc datatransfer transfer get $TRANSFER_ID"
   fi
-
-  warn "found candidate: $CANDIDATE"
-  warn "dropping empty visits_raw table and re-creating as view → $CANDIDATE"
+  FQ_CANDIDATE="${LOCATION}.${CANDIDATE_NAME}"
+  warn "transfer table found at: $FQ_CANDIDATE"
+  warn "dropping empty visits_raw and re-creating as view → $FQ_CANDIDATE"
   # The existing visits_raw is a TABLE (from sql/01_schema.sql), not a view.
   # CREATE OR REPLACE VIEW would fail against a table — drop + create.
   ch "DROP TABLE IF EXISTS visits_raw" > /dev/null
-  ch "CREATE VIEW visits_raw AS SELECT * FROM $CANDIDATE" > /dev/null
+  ch "CREATE VIEW visits_raw AS SELECT * FROM $FQ_CANDIDATE" > /dev/null
   RAW_COUNT="$(ch 'SELECT count() FROM visits_raw' | tr -d '\n')"
   log "  visits_raw (via view) rows: $RAW_COUNT"
-  [ "$RAW_COUNT" -gt 0 ] || die "view still empty — something else is off"
+  [ "$RAW_COUNT" -gt 0 ] || die "view still empty — transfer may have succeeded with 0 rows"
 fi
 
 hdr "Invoking Cloud Function"

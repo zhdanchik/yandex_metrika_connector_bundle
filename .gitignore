@@ -2,7 +2,7 @@
 __pycache__/
 *.pyc
 
-# Python venv for yandexcloud SDK (see scripts/prepare.sh, README)
+# Python venv (optional, project has no required pip deps)
 .venv/
 venv/
 

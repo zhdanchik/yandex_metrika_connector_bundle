@@ -13,25 +13,17 @@ variable "service_account_id" {
   type        = string
 }
 
-# --- Секреты (передаются напрямую, т.к. secret_ref не поддерживается провайдером) ---
+# --- Источник: UI-созданный Metrika endpoint ---
 
-variable "metrika_oauth_token" {
-  description = "OAuth-токен Яндекс Метрики для источника Data Transfer"
+variable "metrika_source_endpoint_id" {
+  description = <<EOT
+ID заранее созданного в UI Metrika source endpoint (dte...).
+Создаётся один раз через YC Console:
+  Data Transfer → Endpoints → Создать endpoint → Источник → Metrica.
+Поле `period` (диапазон дат) — UI-only, поэтому source не управляется
+Terraform'ом.
+EOT
   type        = string
-  sensitive   = true
-}
-
-variable "clickhouse_password" {
-  description = "Пароль пользователя ClickHouse для приёмника Data Transfer"
-  type        = string
-  sensitive   = true
-}
-
-# --- Источник: Яндекс Метрика ---
-
-variable "counter_id" {
-  description = "Номер счётчика Яндекс Метрики"
-  type        = number
 }
 
 # --- Приёмник: Managed ClickHouse ---
@@ -51,4 +43,10 @@ variable "clickhouse_user" {
   description = "Имя пользователя ClickHouse"
   type        = string
   default     = "default"
+}
+
+variable "clickhouse_password" {
+  description = "Пароль пользователя ClickHouse для приёмника Data Transfer"
+  type        = string
+  sensitive   = true
 }

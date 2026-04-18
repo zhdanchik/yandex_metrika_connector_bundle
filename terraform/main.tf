@@ -32,7 +32,22 @@ resource "yandex_resourcemanager_folder_iam_member" "function_invoker" {
 }
 
 # ══════════════════════════════════════════════════════════════
-# Lockbox: секрет с паролем CH и OAuth-токеном Метрики
+# Network: Cloud NAT для egress из подсети Cloud Function
+# ══════════════════════════════════════════════════════════════
+
+module "network" {
+  source = "./modules/network"
+
+  name       = local.prefix
+  folder_id  = var.folder_id
+  network_id = var.network_id
+  subnet_id  = var.subnet_id
+}
+
+# ══════════════════════════════════════════════════════════════
+# Lockbox: секрет с паролем ClickHouse
+# (metrika_oauth_token больше не хранится здесь — токен идёт
+#  напрямую в UI при создании Metrika source endpoint)
 # ══════════════════════════════════════════════════════════════
 
 module "lockbox" {
@@ -41,9 +56,7 @@ module "lockbox" {
   name                = "${local.prefix}-secrets"
   folder_id           = var.folder_id
   clickhouse_password = var.clickhouse_password
-  metrika_oauth_token = var.metrika_oauth_token
   function_sa_id      = yandex_iam_service_account.function.id
-  transfer_sa_id      = yandex_iam_service_account.transfer.id
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -83,30 +96,30 @@ module "function" {
   counter_id     = var.counter_id
   goal_id        = var.goal_id
   half_life_days = var.half_life_days
+
+  # Функция читает Lockbox через интернет — поэтому NAT должен
+  # уже быть привязан к подсети до первого cold start.
+  depends_on = [module.network]
 }
 
 # ══════════════════════════════════════════════════════════════
-# Data Transfer: Яндекс Метрика → ClickHouse
-#
-# ВНИМАНИЕ: модуль transfer закомментирован.
-# Terraform-провайдер (v0.198) не поддерживает обязательный параметр
-# period (start/end дата) для snapshot-режима Metrika-источника.
-# Создай трансфер вручную через YC Console или CLI:
-#
-#   Источник : Яндекс Метрика, counter_id = <var.counter_id>
-#              OAuth-токен = metrika_oauth_token из Lockbox
-#              Тип потока  : Visits, нужные колонки
-#              Период      : нужный диапазон дат
-#   Приёмник  : Managed ClickHouse, кластер = module.clickhouse.cluster_id
-#              БД = metrika, пользователь = analyst
-#   Тип       : SNAPSHOT_ONLY
-#   SA        : transfer-sa (ID = yandex_iam_service_account.transfer.id)
+# Data Transfer: UI-созданный Metrika source → ClickHouse target → transfer
 # ══════════════════════════════════════════════════════════════
 
-# module "transfer" {
-#   source = "./modules/transfer"
-#   ...
-# }
+module "transfer" {
+  source = "./modules/transfer"
+
+  name               = "${local.prefix}-transfer"
+  folder_id          = var.folder_id
+  service_account_id = yandex_iam_service_account.transfer.id
+
+  metrika_source_endpoint_id = var.metrika_source_endpoint_id
+
+  clickhouse_cluster_id = module.clickhouse.cluster_id
+  clickhouse_db         = module.clickhouse.db_name
+  clickhouse_user       = module.clickhouse.db_user
+  clickhouse_password   = var.clickhouse_password
+}
 
 # ══════════════════════════════════════════════════════════════
 # Scheduler: ежедневный запуск трансформации
