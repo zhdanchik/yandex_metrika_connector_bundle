@@ -126,9 +126,16 @@ CASE [Источник атрибуции]
 END
 ```
 
-> В v2 заменим скобки на настоящий словарь (Яндекс/Google/Bing для `2_*`,
-> Директ/Google Ads для `3_*`, VK/FB/OK для `8_*` и т.д.) — возьмём из
-> `TraficSourceID` справочника Метрики. Сейчас цель — **не терять** гранулярность.
+> В v2 заменим скобки на настоящие имена, взятые **из самих данных**
+> (не из хардкод-таблицы). В `TrafficSource` Метрики у каждого числового
+> `*ID` есть строковая пара `*StrID`: `SearchEngineID` ↔ `SearchEngineStrID`,
+> `AdvEngineID` ↔ `AdvEngineStrID`, `SocialSourceNetworkID` ↔ `SocialSourceNetworkStrID`,
+> `RecommendationSystemID` ↔ `RecommendationSystemStrID`, `MessengerID` ↔ `MessengerStrID`.
+> Любой хардкод-словарь (включая таблицу в `README.md` — она заведомо
+> неточная и, возможно, местами просто неверная) проигрывает этому источнику.
+> План v2: расширить схемы `visits_prepared` / `visits_combined` колонками
+> `*StrID`, протащить их до `attribution_results`, и тут в DataLens
+> формировать имя по реальной паре id→str без хардкода.
 
 ### Фильтры на уровне датасета — не задаём
 
@@ -442,9 +449,17 @@ module.exports = {
 
 ## 10. Что в будущих версиях
 
+- **v2**: настоящие имена источников из данных. В `TrafficSource` Метрики
+  у каждого `*ID` есть строковая пара `*StrID` — `SearchEngineID`/`SearchEngineStrID`,
+  `AdvEngineID`/`AdvEngineStrID`, `SocialSourceNetworkID`/`SocialSourceNetworkStrID`,
+  `RecommendationSystemID`/`RecommendationSystemStrID`, `MessengerID`/`MessengerStrID`.
+  Нужно протащить `*StrID` через `visits_prepared` → `visits_combined` →
+  `attribution_results` (или в отдельный lookup-датамарт) и в DataLens строить
+  название по реальной паре id→str вместо префиксной регулярки.
+  Текущая таблица кодов в `README.md` — приблизительная и не источник истины.
 - **v2**: расширить `source_code` — добавить `ClickID`/кампании из Яндекс Директа
-  (требует пересборки `visits_prepared` с новыми полями)
-- **v2**: нативный Sankey в Wizard (как только появится в DataLens)
-- **v2**: когортный анализ — когорты по дате первого касания
+  (требует пересборки `visits_prepared` с новыми полями).
+- **v2**: нативный Sankey в Wizard (как только появится в DataLens).
+- **v2**: когортный анализ — когорты по дате первого касания.
 - **v3**: ROAS-калькулятор — требует поле «стоимость» от пользователя
-  (его нет в Метрике, нужен отдельный источник)
+  (его нет в Метрике, нужен отдельный источник).
