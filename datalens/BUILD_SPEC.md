@@ -159,9 +159,9 @@ END
 SELECT
     history.SourceCode[i]   AS from_channel,
     history.SourceCode[i+1] AS to_channel,
-    position(toString(i)) AS step,
-    count() AS visits,
-    sum(Conversions) AS conversions
+    i                       AS step,
+    count()                 AS visits,
+    sum(Conversions)        AS conversions
 FROM (
     SELECT
         history.SourceCode,
@@ -169,11 +169,17 @@ FROM (
         arrayJoin(range(1, length(history.SourceCode))) AS i
     FROM metrika.visits_combined
     WHERE length(history.SourceCode) >= 2
-)
+) AS expanded
 GROUP BY from_channel, to_channel, step
-HAVING visits >= 5           -- шум обрежь
+HAVING visits >= 5
 ORDER BY step, visits DESC
 ```
+
+> `arrayJoin(range(1, length(...)))` в ClickHouse даёт индексы `1..length-1`,
+> что гарантирует валидный `history.SourceCode[i+1]` для всех строк.
+> Массивы в CH 1-индексные, так что `[i]` начинается с первого касания.
+> Если захочется показать только цепочки с конверсией — добавь
+> `WHERE ... AND Conversions > 0` во внутренний SELECT.
 
 ### Поля
 
