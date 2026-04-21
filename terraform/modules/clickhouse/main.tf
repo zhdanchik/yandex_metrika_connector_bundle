@@ -20,6 +20,15 @@ resource "yandex_mdb_clickhouse_cluster" "main" {
     assign_public_ip = var.assign_public_ip
   }
 
+  # Разрешаем подключение DataLens к этому кластеру. Без этого флага
+  # выбор кластера в DataLens UI при создании connection молча пустой.
+  # Сама connection создаётся пользователем в UI (TF-провайдер пока
+  # поддерживает yandex_datalens_connection только для YDB; как только
+  # появится clickhouse-вариант, перенесём в module.datalens).
+  access {
+    data_lens = true
+  }
+
   # database / user управляются отдельными ресурсами ниже —
   # nested-блоки deprecated начиная с yandex provider 0.199.
 

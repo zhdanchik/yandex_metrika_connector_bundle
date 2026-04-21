@@ -29,6 +29,10 @@ tests/
 
 scripts/                     # Dev/test-оркестрация (cleanup / deploy / smoke / e2e) — НЕ едет в Marketplace
 terraform/                   # Инфраструктурный слой (всё для Marketplace-бандла здесь)
+datalens/
+  BUILD_SPEC.md              # Пошаговая инструкция ручной сборки дашборда
+  NOTES.md                   # Обоснования решений, известные ограничения, v2 TODO
+  dashboard.json             # Экспортированный workbook (результат сборки)
 pyproject.toml               # pytest-конфигурация
 ```
 
@@ -266,14 +270,22 @@ pytest --integration tests/test_integration.py -v
 
 **OAuth-токен Яндекс Метрики**
 
-1. Перейдите на [oauth.yandex.ru](https://oauth.yandex.ru/) и создайте приложение с правом `metrika:read`.
-2. Сохраните выданный токен — понадобится один раз, когда будете создавать Metrika source endpoint в YC Console (см. раздел «Ручной шаг: Metrika source endpoint»). В Terraform/Lockbox этот токен больше не нужен.
+1. Перейдите на [oauth.yandex.ru](https://oauth.yandex.ru/) и создайте приложение с правом `metrika:write` (именно write — Data Transfer требует этот scope для активации Metrika source endpoint'а; `metrika:read` недостаточно).
+2. Сохраните выданный токен — понадобится дважды:
+   - один раз при создании Metrika source endpoint в YC Console (см. «Ручной шаг: Metrika source endpoint»),
+   - один раз при запуске `scripts/pick_goal.py` (см. ниже). После этого токен нигде не хранится — в Terraform/Lockbox его нет.
 
 **Параметры счётчика и цели**
 
-В интерфейсе Яндекс Метрики найдите:
-- **Номер счётчика** — виден в URL (`metrika.yandex.ru/list/counter/<ID>`)
-- **ID цели** — в разделе «Цели» → кликните на цель → ID в URL
+- **Номер счётчика** — виден в URL интерфейса Метрики (`metrika.yandex.ru/list/counter/<ID>`). Впиши в `terraform.tfvars` как `counter_id`.
+- **ID цели** — не ищи вручную в UI. Запусти `python3 scripts/pick_goal.py` после заполнения `counter_id` — скрипт сходит в Metrika Management API, покажет список целей счётчика с именами/типами и впишет выбранный `goal_id` в `terraform.tfvars`. Токен используется для одного HTTPS-запроса и не персистится.
+
+```bash
+cd terraform/ && cp terraform.tfvars.example terraform.tfvars
+# заполни folder_id, network_id, subnet_id, counter_id, function_bucket_name, clickhouse_password
+python3 ../scripts/pick_goal.py   # интерактивный выбор goal_id
+# или:  METRIKA_OAUTH_TOKEN=xxx python3 ../scripts/pick_goal.py --non-interactive --goal-name "Покупка"
+```
 
 ---
 
@@ -371,6 +383,7 @@ trigger_id            = "..."
 | Скрипт | Действия |
 |--------|----------|
 | `scripts/lib.sh` | Общие хелперы: логирование (`log`/`ok`/`warn`/`die`/`hdr`), `require_bin`, `tfvar_get` (HCL-парсер), `confirm`, `refresh_yc_token` (перед каждым терраформ/yc-вызовом — IAM-токены живут ~12ч) |
+| `scripts/pick_goal.py` | Интерактивный выбор `goal_id`: читает `counter_id` из tfvars, спрашивает OAuth-токен Метрики (`metrika:write`), дёргает `GET /management/v1/counter/{id}/goals`, фильтрует ретаргетинг/engagement-цели, показывает нумерованное меню и переписывает `goal_id` в tfvars. Токен используется один раз и не сохраняется. Флаги: `--non-interactive --goal-name "..."` для автоматизации, `--show-all` чтобы не прятать `depth`/`number`, `--print-only` чтобы не трогать tfvars. Stdlib-only, без pip-зависимостей |
 | `scripts/prepare.sh` | Preflight: проверяет `yc`/`terraform`/`clickhouse-client`/`jq`/`python3`/`curl`; валидирует `terraform.tfvars` (нет placeholder'ов + все обязательные ключи включая `metrika_source_endpoint_id`); скачивает Yandex CA → `functions/transform/CA.pem`; синхронизирует `sql/*.sql` в бандл функции (источник истины — `sql/`) |
 | `scripts/cleanup.sh` | По префиксу имени (`metrika-attribution-*`) удаляет: триггеры, функции, Data Transfer'ы + endpoint'ы, MDB-кластеры (снимает `deletion_protection`), Lockbox-секреты, route-table'ы + VPC gateway'и (с отвязкой подсети), Object Storage бакет (через `yc storage s3api` на IAM-токене пользователя — без статик-ключей), сервисные аккаунты; чистит локальный `terraform.tfstate`. Автоматически читает `metrika_source_endpoint_id` из tfvars и сохраняет этот UI-source от удаления (можно переопределить через `KEEP_SOURCE_ID`) |
 | `scripts/deploy.sh` | Вызывает `prepare.sh`, затем `terraform init → plan → apply`. Всё — Terraform: NAT, DT endpoint, transfer (активируется + поллится до DONE через `null_resource` в модуле). Никаких out-of-band шагов после apply |
@@ -444,7 +457,7 @@ Cloud Function  ──── IAM token (metadata 169.254.169.254) ──▶ Lock
 | Код функции (`functions/transform/`) | `terraform apply` — zip пересобирается автоматически |
 | Схема БД (`sql/01_schema.sql`) | `terraform apply` — `null_resource.schema` перезапускается |
 | Пароль ClickHouse | Обновить в Lockbox вручную **и** `terraform apply` |
-| Новый `goal_id` | Обновить `terraform.tfvars`, `terraform apply` |
+| Новый `goal_id` | `python3 scripts/pick_goal.py` (перепишет tfvars), затем `terraform apply` |
 
 > **Примечание о деплое функции.** Если Terraform не подхватывает изменения кода (плановый hash совпадает со старым),
 > создайте версию функции вручную через YC CLI:
@@ -502,7 +515,7 @@ terraform destroy
    - `https://console.yandex.cloud/folders/<folder_id>/data-transfer/endpoints` → **Создать endpoint**
    - Направление: **Источник**, База: **Metrica**
    - Счётчик: `<counter_id>`
-   - Токен: OAuth-токен Метрики (с правом `metrika:read`)
+   - Токен: OAuth-токен Метрики (с правом `metrika:write` — read недостаточно, DT падает с 403 на активации)
    - **Период выгрузки данных: Начало / Конец**
    - Stream: **Визиты** + нужные поля (см. список ниже)
    - Сохрани — получишь id вида `dte...`
@@ -558,10 +571,100 @@ Code: 386. DB::Exception: There is no supertype for types UInt64, Int64
 
 ---
 
+## DataLens-дашборд
+
+В репо зафиксирован готовый `datalens/dashboard.json` — экспорт воркбука
+DataLens со всей логикой: подключение к ClickHouse, три датасета на
+таблицах `attribution_results` / `visits_combined` + touchpoints-subselect,
+семь чартов (3 KPI, 100%-стек, time-series, grouped bar, сводная таблица),
+три глобальных селектора (Период / Модель / Источник) с прописанными
+Связями.
+
+**Что ты получаешь после импорта:**
+
+- Индикаторы за период: атрибутированный доход, конверсии, среднее число
+  касаний до конверсии.
+- Сравнение 4 моделей (First / Last / Linear / Time Decay) в стек-баре
+  и группированных столбцах — видно, как разные модели по-разному
+  кредитуют источники.
+- Time-series топ-источников для выбранной модели — переключи модель,
+  график перестроится.
+- Сводная таблица источник × модель × метрика с heat-gradient по конверсиям.
+
+Полный рецепт сборки — в [`datalens/BUILD_SPEC.md`](datalens/BUILD_SPEC.md),
+обоснования решений и v2-TODO — в [`datalens/NOTES.md`](datalens/NOTES.md).
+
+### Импорт дашборда
+
+Выполняется один раз после `terraform apply`. Terraform не автоматизирует
+этот шаг — ни `yandex_datalens_connection`, ни API для CH в DataLens
+пока не поддерживаются Terraform-провайдером (см. [раздел «Что в
+будущих версиях»](datalens/NOTES.md#v2--на-сортировку)).
+
+1. Получи ссылку на форму импорта:
+   ```bash
+   terraform -chdir=terraform output -raw datalens_import_url
+   # → https://datalens.yandex.cloud/workbooks/import?folderId=<folder_id>
+   ```
+2. Открой ссылку в браузере. DataLens откроет диалог **Импортировать
+   воркбук** в нужном каталоге.
+3. Выбери файл `datalens/dashboard.json` из репо. Укажи название
+   и коллекцию (можно создать новую «Атрибуция Метрики»).
+4. На шаге привязки подключения: DataLens покажет пустое
+   **ClickHouse connection** — нажми «Создать новое» / «Привязать»,
+   выбери свой кластер из выпадашки (`terraform output -raw
+   clickhouse_cluster_id` — для сверки) и введи:
+   - **Имя пользователя**: `terraform output -raw clickhouse_db_user`
+     (по умолчанию `analyst`).
+   - **Пароль**: тот же, что в `terraform.tfvars` / Lockbox.
+   - **Уровень SQL-запросов**: `Подзапросы` (нужно для датасета
+     `ds_chains`, даже если Sankey-чарт сейчас не используется).
+5. Подтверди импорт. Все три датасета автоматически привяжутся к
+   созданному подключению, чарты и дашборд откроются с данными.
+
+После импорта на дашборде «Атрибуция Метрики — Витрина» крути
+селекторы Период / Модель / Источник — всё интерактивно.
+
+### Что пошло не так: troubleshooting импорта
+
+| Симптом | Причина и фикс |
+|---------|----------------|
+| «Workbook data hash validation failed» | Кто-то редактировал `datalens/dashboard.json` руками. Файл подписан серверным HMAC — любое изменение ломает импорт. Перевыгрузи из DataLens после правок (см. [BUILD_SPEC §10](datalens/BUILD_SPEC.md#10-экспорт-и-коммит)). |
+| Кластер не виден в выпадашке при создании подключения | Не включён `access.data_lens = true` на MDB-кластере. Проверь: `yc managed-clickhouse cluster get <cluster_id> --format json \| jq .config.access.data_lens`. Если `false` — `terraform apply` должен был выставить флаг; возможно, drift. |
+| «Permission denied» при импорте | У пользователя нет роли `datalens.instances.user` в организации или `datalens.admin` на целевой коллекции. Выдай через YC Identity Hub. |
+| Датасеты привязались, но чарты красные («Connection error») | Пароль при создании подключения был введён неверно. Открой подключение → проверь пароль → сохрани. Чарты автоматически переподтянутся. |
+| Дашборд импортировался, но селекторы ничего не фильтруют | Редкий баг — Связи не переехали. В редакторе дашборда → **Связи** → проверь, что три селектора привязаны к чартам (схема должна совпадать с [BUILD_SPEC §9](datalens/BUILD_SPEC.md#9-глобальные-селекторы)). |
+| Хочу поправить dashboard.json | Не редактируй файл напрямую (хэш-валидация). Импортируй в свой воркбук → поправь в UI → **Экспортировать** → закоммить новый файл. См. [BUILD_SPEC §10](datalens/BUILD_SPEC.md#10-экспорт-и-коммит). |
+
+### Авто-импорт (roadmap)
+
+Пока что импорт — ручной клик в UI. Auto-import через internal BFF
+(`POST /api/internal/v1/workbooks/import/`) технически возможен, но
+endpoint приватный, без публичного SLA, контракт менялся в 2024
+(hash-валидация, nullable collectionId). Подпишемся на него только
+в Part E, с обязательным fallback'ом «ретраим через UI при поломке».
+
+### Пересборка дашборда
+
+Если нужно изменить чарт или добавить новый:
+
+1. Импортируй текущий `datalens/dashboard.json` в чистый воркбук
+   (см. выше).
+2. Внеси правки в UI.
+3. Экспортируй воркбук, перезапиши `datalens/dashboard.json`.
+4. Закоммить изменения — хэш пересчитается на сервере, импорт
+   продолжит работать.
+
+> **Не редактируй `dashboard.json` руками** — hash-валидация
+> сломает импорт. Всё, что выглядит редактируемым (названия
+> полей, SQL датасетов, JS чарт-редактора) — правится через UI.
+
+---
+
 ## Статус разработки
 
 - [x] **Part A** — Ядро трансформаций (SQL + Cloud Function + тесты)
 - [x] **Part B** — Terraform-модуль (протестирован end-to-end на реальном кластере YC)
-- [ ] **Part C** — Выбор цели конверсии (Marketplace wizard)
-- [ ] **Part D** — DataLens-дашборд
+- [x] **Part C** — Выбор цели конверсии (`scripts/pick_goal.py` — интерактивный picker)
+- [x] **Part D** — DataLens-дашборд (`datalens/dashboard.json` + BUILD_SPEC + NOTES)
 - [ ] **Part E** — Упаковка в Marketplace
