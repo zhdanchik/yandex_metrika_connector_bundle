@@ -31,7 +31,8 @@ scripts/                     # Dev/test-оркестрация (cleanup / deploy
 terraform/                   # Инфраструктурный слой (всё для Marketplace-бандла здесь)
 datalens/
   BUILD_SPEC.md              # Пошаговая инструкция ручной сборки дашборда
-  dashboard.json             # Экспортированный workbook (добавляется после сборки)
+  NOTES.md                   # Обоснования решений, известные ограничения, v2 TODO
+  dashboard.json             # Экспортированный workbook (результат сборки)
 pyproject.toml               # pytest-конфигурация
 ```
 
@@ -590,14 +591,15 @@ DataLens со всей логикой: подключение к ClickHouse, т�
   график перестроится.
 - Сводная таблица источник × модель × метрика с heat-gradient по конверсиям.
 
-Подробнее о каждом чарте — в [`datalens/BUILD_SPEC.md`](datalens/BUILD_SPEC.md).
+Полный рецепт сборки — в [`datalens/BUILD_SPEC.md`](datalens/BUILD_SPEC.md),
+обоснования решений и v2-TODO — в [`datalens/NOTES.md`](datalens/NOTES.md).
 
 ### Импорт дашборда
 
 Выполняется один раз после `terraform apply`. Terraform не автоматизирует
 этот шаг — ни `yandex_datalens_connection`, ни API для CH в DataLens
 пока не поддерживаются Terraform-провайдером (см. [раздел «Что в
-будущих версиях»](datalens/BUILD_SPEC.md#10-что-в-будущих-версиях)).
+будущих версиях»](datalens/NOTES.md#v2--на-сортировку)).
 
 1. Получи ссылку на форму импорта:
    ```bash
@@ -627,12 +629,12 @@ DataLens со всей логикой: подключение к ClickHouse, т�
 
 | Симптом | Причина и фикс |
 |---------|----------------|
-| «Workbook data hash validation failed» | Кто-то редактировал `datalens/dashboard.json` руками. Файл подписан серверным HMAC — любое изменение ломает импорт. Перевыгрузи из DataLens после правок (см. [BUILD_SPEC §8](datalens/BUILD_SPEC.md#8-экспорт-и-коммит)). |
+| «Workbook data hash validation failed» | Кто-то редактировал `datalens/dashboard.json` руками. Файл подписан серверным HMAC — любое изменение ломает импорт. Перевыгрузи из DataLens после правок (см. [BUILD_SPEC §10](datalens/BUILD_SPEC.md#10-экспорт-и-коммит)). |
 | Кластер не виден в выпадашке при создании подключения | Не включён `access.data_lens = true` на MDB-кластере. Проверь: `yc managed-clickhouse cluster get <cluster_id> --format json \| jq .config.access.data_lens`. Если `false` — `terraform apply` должен был выставить флаг; возможно, drift. |
 | «Permission denied» при импорте | У пользователя нет роли `datalens.instances.user` в организации или `datalens.admin` на целевой коллекции. Выдай через YC Identity Hub. |
 | Датасеты привязались, но чарты красные («Connection error») | Пароль при создании подключения был введён неверно. Открой подключение → проверь пароль → сохрани. Чарты автоматически переподтянутся. |
-| Дашборд импортировался, но селекторы ничего не фильтруют | Редкий баг — Связи не переехали. В редакторе дашборда → **Связи** → проверь, что три селектора привязаны к чартам (схема должна совпадать с [BUILD_SPEC §7](datalens/BUILD_SPEC.md#7-раскладка-дашборда)). |
-| Хочу поправить dashboard.json | Не редактируй файл напрямую (хэш-валидация). Импортируй в свой воркбук → поправь в UI → **Экспортировать** → закоммить новый файл. См. [BUILD_SPEC §8](datalens/BUILD_SPEC.md#8-экспорт-и-коммит). |
+| Дашборд импортировался, но селекторы ничего не фильтруют | Редкий баг — Связи не переехали. В редакторе дашборда → **Связи** → проверь, что три селектора привязаны к чартам (схема должна совпадать с [BUILD_SPEC §9](datalens/BUILD_SPEC.md#9-глобальные-селекторы)). |
+| Хочу поправить dashboard.json | Не редактируй файл напрямую (хэш-валидация). Импортируй в свой воркбук → поправь в UI → **Экспортировать** → закоммить новый файл. См. [BUILD_SPEC §10](datalens/BUILD_SPEC.md#10-экспорт-и-коммит). |
 
 ### Авто-импорт (roadmap)
 
@@ -664,5 +666,5 @@ endpoint приватный, без публичного SLA, контракт �
 - [x] **Part A** — Ядро трансформаций (SQL + Cloud Function + тесты)
 - [x] **Part B** — Terraform-модуль (протестирован end-to-end на реальном кластере YC)
 - [x] **Part C** — Выбор цели конверсии (`scripts/pick_goal.py` — интерактивный picker)
-- [x] **Part D** — DataLens-дашборд (`datalens/dashboard.json` + BUILD_SPEC)
+- [x] **Part D** — DataLens-дашборд (`datalens/dashboard.json` + BUILD_SPEC + NOTES)
 - [ ] **Part E** — Упаковка в Marketplace
