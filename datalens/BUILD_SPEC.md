@@ -332,100 +332,75 @@ DataLens не имеет отдельного UI-контрола вроде «�
   Дата — из глобального селектора «Период» (§7).
 - Название: «Топ источников: расхождения между моделями»
 
-### Чарт 7 — `ch_sankey`: Sankey цепочек касаний (Чарт-редактор)
+### Чарт 7 — `ch_sankey`: Sankey цепочек касаний (Editor)
 
-В Wizard'е Sankey **нет** — делаем через **Чарт-редактор** (custom JS).
+Sankey нет в Wizard и в QL — делаем через **Чарт в Editor** на шаблоне
+**«График (Gravity UI Charts)»** (Gravity UI Charts — Яндексовская
+обёртка над Highcharts, Sankey там нативно поддерживается).
 
-1. Воркбук → **Добавить** → **Чарт-редактор** → шаблон: **Custom JS**.
-2. Привязанный датасет: `ds_chains`.
-3. Вкладки (tabs) с кодом:
+1. В воркбуке → **Создать чарт** → **Чарт в Editor**.
+2. Выбери шаблон **«График (Gravity UI Charts)»**.
+3. Привяжи датасет `ds_chains` (секция данных редактора).
 
-Вкладка **`params`**:
+Редактор показывает несколько вкладок с кодом (точные имена могут
+варьироваться между версиями DataLens). Ниже — минимальный
+скелет; если вкладок с такими именами в твоём UI нет — смотри, в
+какой вкладке редактор ждёт JS-код с `module.exports` и какая
+принимает data-source, и переноси фрагменты туда.
 
-```json
-{
-  "chart_name": "Touch chains sankey",
-  "max_steps": 3
-}
-```
-
-Вкладка **`url`** — оставь пустой (данные читаем через `Editor.getLoadedData()`).
-
-Вкладка **`js`**:
+**Вкладка с JS-кодом** (превращает строки `ds_chains` в структуру
+`{nodes, links}`, нужную Sankey):
 
 ```js
-// Source: ds_chains grouped by (from_channel, to_channel, step)
-const data = Editor.getLoadedData();
-const rows = data?.[0]?.rows ?? [];
-const maxStep = 3;  // показываем 3 перехода максимум
+// Данные из привязанного датасета ds_chains:
+// колонки: from_channel, to_channel, step, visits, conversions
+const raw = Editor.getLoadedData()?.[0]?.rows ?? [];
+const maxStep = 3; // показываем до 3 переходов
 
-const nodes = new Map();  // "step:channel" -> index
-const links = [];
-
+const nodes = new Map();
 function nodeId(step, ch) {
     const k = `${step}:${ch}`;
-    if (!nodes.has(k)) nodes.set(k, { id: nodes.size, name: ch, step });
+    if (!nodes.has(k)) nodes.set(k, { id: k, name: ch });
     return nodes.get(k).id;
 }
 
-for (const row of rows) {
-    const [from, to, step, visits] = row;
+const links = [];
+for (const [from, to, step, visits] of raw) {
     if (step > maxStep) continue;
     links.push({
-        source: nodeId(step, from),
-        target: nodeId(step + 1, to),
-        value: Number(visits),
+        from: nodeId(step, from),
+        to: nodeId(step + 1, to),
+        weight: Number(visits),
     });
 }
 
 module.exports = {
-    data: {
-        nodes: [...nodes.values()],
-        links,
+    series: {
+        data: [{
+            type: 'sankey',
+            data: links,
+            nodes: [...nodes.values()],
+        }],
     },
+    title: { text: 'Путь клиента: источник → источник' },
+    subtitle: { text: 'Топ переходов между касаниями (мин 5 визитов)' },
 };
 ```
 
-Вкладка **`ui`**:
+> Формат `series.data[].type='sankey'` с массивами `data` и `nodes` —
+> это интерфейс Gravity UI Charts / Highcharts-Sankey. Если при
+> сохранении редактор ругается на схему — проверь в левой панели
+> редактора «Пример» / «Preview» или документацию Gravity UI Charts:
+> https://preview.gravity-ui.com/charts/. Там же готовый Sankey-демо.
 
-```json
-{
-  "controls": []
-}
-```
-
-Вкладка **`graph`** (конфиг чарта, передаётся в d3-sankey-рендер):
-
-```json
-{
-  "chart": { "type": "sankey" },
-  "series": [{
-    "type": "sankey",
-    "data": "{{data}}",
-    "nodeAlign": "left",
-    "nodeWidth": 12,
-    "nodePadding": 8
-  }],
-  "tooltip": { "enabled": true }
-}
-```
-
-Вкладка **`shared`** — оставь пустой (между вкладками состояние не передаётся).
-
-> Если Чарт-редактор не рендерит sankey «из коробки», запасной путь —
-> подтянуть публичный `d3-sankey` через CDN во вкладке **`js`**:
->
-> ```js
-> const d3 = require('https://cdn.jsdelivr.net/npm/d3@7/+esm');
-> const d3sankey = require('https://cdn.jsdelivr.net/npm/d3-sankey@0.12/+esm');
-> // …собрать SVG вручную и вернуть через module.exports.html
-> ```
->
-> Сработает только если DataLens-рантайм разрешает external modules.
-> Если нет — оставь чарт заглушкой с пометкой «будет в v2», не застревай.
+> **Fallback:** если Gravity UI Charts в твоей версии DataLens
+> не поддерживает sankey, пересоздай чарт на шаблоне **«Advanced-чарт»**
+> (HTML + SVG) и собирай SVG руками через `d3-sankey`. Это сильно
+> дороже по коду — если упрёшься, временно выкидываем §Чарт 7 в v2,
+> дашборд и без него остаётся showcase-уровневый.
 
 - Название: «Путь клиента: источник → источник»
-- Подзаголовок: «Топ переходов между касаниями, 30д (мин 5 визитов)»
+- Подзаголовок: «Топ переходов между касаниями (мин 5 визитов)»
 
 ### Чарт 8 — `ch_pivot`: сводная таблица по источникам и моделям
 
