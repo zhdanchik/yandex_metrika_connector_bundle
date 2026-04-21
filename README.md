@@ -572,28 +572,90 @@ Code: 386. DB::Exception: There is no supertype for types UInt64, Int64
 
 ## DataLens-дашборд
 
-Terraform включает `access.data_lens = true` на MDB-кластере, что делает его доступным в dropdown'е при создании connection в DataLens. Сам DataLens не провижится через Terraform — `yandex_datalens_connection` в провайдере пока поддерживает только YDB, для ClickHouse соединение создаётся в UI. Кроме того, экспортированный workbook-файл подписан серверным HMAC и не редактируется, так что «сгенерить `dashboard.json` автоматом» невозможно — собирается один раз руками по spec'у, затем экспортируется и коммитится.
+В репо зафиксирован готовый `datalens/dashboard.json` — экспорт воркбука
+DataLens со всей логикой: подключение к ClickHouse, три датасета на
+таблицах `attribution_results` / `visits_combined` + touchpoints-subselect,
+семь чартов (3 KPI, 100%-стек, time-series, grouped bar, сводная таблица),
+три глобальных селектора (Период / Модель / Источник) с прописанными
+Связями.
 
-### Сборка дашборда (один раз на версию бандла)
+**Что ты получаешь после импорта:**
 
-Полный пошаговый spec — в [`datalens/BUILD_SPEC.md`](datalens/BUILD_SPEC.md). Коротко:
+- Индикаторы за период: атрибутированный доход, конверсии, среднее число
+  касаний до конверсии.
+- Сравнение 4 моделей (First / Last / Linear / Time Decay) в стек-баре
+  и группированных столбцах — видно, как разные модели по-разному
+  кредитуют источники.
+- Time-series топ-источников для выбранной модели — переключи модель,
+  график перестроится.
+- Сводная таблица источник × модель × метрика с heat-gradient по конверсиям.
 
-1. Открыть DataLens → Create collection → Create workbook.
-2. Создать connection на ClickHouse (cluster из dropdown, `raw_sql_level = subselect`).
-3. Построить 2 датасета (`attribution_results` + subselect на `visits_combined`).
-4. Собрать 8 чартов (3 KPI, stacked bar, time series, grouped bar, Sankey через Chart Editor, pivot).
-5. Выложить на dashboard 24-col grid с тремя глобальными фильтрами (Date / Model / Channel).
-6. Export workbook → положить файл как `datalens/dashboard.json`, закоммитить.
+Подробнее о каждом чарте — в [`datalens/BUILD_SPEC.md`](datalens/BUILD_SPEC.md).
 
-### Импорт дашборда (каждый пользователь бандла)
+### Импорт дашборда
 
-После `terraform apply` → `terraform output datalens_import_url` покажет ссылку вида
-`https://datalens.yandex.cloud/workbooks/import?folderId=<folder_id>`. Пользователь:
+Выполняется один раз после `terraform apply`. Terraform не автоматизирует
+этот шаг — ни `yandex_datalens_connection`, ни API для CH в DataLens
+пока не поддерживаются Terraform-провайдером (см. [раздел «Что в
+будущих версиях»](datalens/BUILD_SPEC.md#10-что-в-будущих-версиях)).
 
-1. Открывает URL, загружает `datalens/dashboard.json`.
-2. На шаге «Connection mapping» DataLens сам найдёт созданный им же ClickHouse-кластер в выпадающем списке; нужно выбрать, ввести пароль (тот же что в Lockbox) — и дашборд готов.
+1. Получи ссылку на форму импорта:
+   ```bash
+   terraform -chdir=terraform output -raw datalens_import_url
+   # → https://datalens.yandex.cloud/workbooks/import?folderId=<folder_id>
+   ```
+2. Открой ссылку в браузере. DataLens откроет диалог **Импортировать
+   воркбук** в нужном каталоге.
+3. Выбери файл `datalens/dashboard.json` из репо. Укажи название
+   и коллекцию (можно создать новую «Атрибуция Метрики»).
+4. На шаге привязки подключения: DataLens покажет пустое
+   **ClickHouse connection** — нажми «Создать новое» / «Привязать»,
+   выбери свой кластер из выпадашки (`terraform output -raw
+   clickhouse_cluster_id` — для сверки) и введи:
+   - **Имя пользователя**: `terraform output -raw clickhouse_db_user`
+     (по умолчанию `analyst`).
+   - **Пароль**: тот же, что в `terraform.tfvars` / Lockbox.
+   - **Уровень SQL-запросов**: `Подзапросы` (нужно для датасета
+     `ds_chains`, даже если Sankey-чарт сейчас не используется).
+5. Подтверди импорт. Все три датасета автоматически привяжутся к
+   созданному подключению, чарты и дашборд откроются с данными.
 
-> Авто-импорт через internal BFF DataLens (`POST /api/internal/v1/workbooks/import/`) технически возможен, но endpoint приватный, hash-валидированный и без SLA — подпишемся на него только в Part E, когда появится паттерн «ретраим-на-UI при поломке».
+После импорта на дашборде «Атрибуция Метрики — Витрина» крути
+селекторы Период / Модель / Источник — всё интерактивно.
+
+### Что пошло не так: troubleshooting импорта
+
+| Симптом | Причина и фикс |
+|---------|----------------|
+| «Workbook data hash validation failed» | Кто-то редактировал `datalens/dashboard.json` руками. Файл подписан серверным HMAC — любое изменение ломает импорт. Перевыгрузи из DataLens после правок (см. [BUILD_SPEC §8](datalens/BUILD_SPEC.md#8-экспорт-и-коммит)). |
+| Кластер не виден в выпадашке при создании подключения | Не включён `access.data_lens = true` на MDB-кластере. Проверь: `yc managed-clickhouse cluster get <cluster_id> --format json \| jq .config.access.data_lens`. Если `false` — `terraform apply` должен был выставить флаг; возможно, drift. |
+| «Permission denied» при импорте | У пользователя нет роли `datalens.instances.user` в организации или `datalens.admin` на целевой коллекции. Выдай через YC Identity Hub. |
+| Датасеты привязались, но чарты красные («Connection error») | Пароль при создании подключения был введён неверно. Открой подключение → проверь пароль → сохрани. Чарты автоматически переподтянутся. |
+| Дашборд импортировался, но селекторы ничего не фильтруют | Редкий баг — Связи не переехали. В редакторе дашборда → **Связи** → проверь, что три селектора привязаны к чартам (схема должна совпадать с [BUILD_SPEC §7](datalens/BUILD_SPEC.md#7-раскладка-дашборда)). |
+| Хочу поправить dashboard.json | Не редактируй файл напрямую (хэш-валидация). Импортируй в свой воркбук → поправь в UI → **Экспортировать** → закоммить новый файл. См. [BUILD_SPEC §8](datalens/BUILD_SPEC.md#8-экспорт-и-коммит). |
+
+### Авто-импорт (roadmap)
+
+Пока что импорт — ручной клик в UI. Auto-import через internal BFF
+(`POST /api/internal/v1/workbooks/import/`) технически возможен, но
+endpoint приватный, без публичного SLA, контракт менялся в 2024
+(hash-валидация, nullable collectionId). Подпишемся на него только
+в Part E, с обязательным fallback'ом «ретраим через UI при поломке».
+
+### Пересборка дашборда
+
+Если нужно изменить чарт или добавить новый:
+
+1. Импортируй текущий `datalens/dashboard.json` в чистый воркбук
+   (см. выше).
+2. Внеси правки в UI.
+3. Экспортируй воркбук, перезапиши `datalens/dashboard.json`.
+4. Закоммить изменения — хэш пересчитается на сервере, импорт
+   продолжит работать.
+
+> **Не редактируй `dashboard.json` руками** — hash-валидация
+> сломает импорт. Всё, что выглядит редактируемым (названия
+> полей, SQL датасетов, JS чарт-редактора) — правится через UI.
 
 ---
 
@@ -601,6 +663,6 @@ Terraform включает `access.data_lens = true` на MDB-кластере, 
 
 - [x] **Part A** — Ядро трансформаций (SQL + Cloud Function + тесты)
 - [x] **Part B** — Terraform-модуль (протестирован end-to-end на реальном кластере YC)
-- [ ] **Part C** — Выбор цели конверсии (Marketplace wizard)
-- [ ] **Part D** — DataLens-дашборд
+- [x] **Part C** — Выбор цели конверсии (`scripts/pick_goal.py` — интерактивный picker)
+- [x] **Part D** — DataLens-дашборд (`datalens/dashboard.json` + BUILD_SPEC)
 - [ ] **Part E** — Упаковка в Marketplace
