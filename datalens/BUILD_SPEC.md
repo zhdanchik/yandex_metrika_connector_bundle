@@ -343,25 +343,52 @@ Sankey нет в Wizard и в QL — делаем через **Чарт в Edito
 2. Редактор открывается на вкладке **Prepare** с примером `bar-x`.
    Слева в «3 панели» — Code editor / Preview / Console.
 
-#### Вкладка **Sources** — подключаем `ds_chains`
-
-Добавь источник → выбери датасет **`ds_chains`** из текущего воркбука.
-Назови псевдонимом (alias) `chains`. Ограничений по полям/фильтрам
-здесь не ставим — всё оставим на чарт-редактор.
-
-#### Вкладка **Prepare** — JS, превращающий строки в sankey-серию
-
-Полностью заменяем содержимое на:
+#### Вкладка **Meta** — alias для датасета
 
 ```js
-// Источник: chains (алиас ds_chains из вкладки Sources).
-// Колонки: from_channel, to_channel, step, visits, conversions.
-const { chains } = ChartEditor.getLoadedData();
-const rows = (chains && chains.rows) || [];
+module.exports = {
+    datasets: {
+        chainsDataset: '<UUID_датасета_ds_chains>',
+    },
+};
+```
+
+> UUID датасета виден в URL, когда открываешь `ds_chains` в DataLens
+> (формат `.../datasets/<uuid>/...`). Либо через API.
+
+#### Вкладка **Sources** — подключаем данные
+
+```js
+const {buildSource} = require('libs/dataset/v2');
+
+module.exports = {
+    chains: buildSource({
+        datasetId: Editor.getId('chainsDataset'),
+        columns: [
+            'Откуда',
+            'Куда',
+            'Шаг',
+            'Визиты цепочки',
+            'Конверсии цепочки',
+        ],
+    }),
+};
+```
+
+`buildSource({datasetId, columns})` из стандартного модуля DataLens
+`libs/dataset/v2` превращает alias + список полей в URL-эндпоинт,
+откуда редактор тащит данные при «Выполнить».
+
+#### Вкладка **Prepare** — строим Sankey-серию
+
+```js
+const Dataset = require('libs/dataset/v2');
+const rows = Dataset.getDatasetRows({datasetName: 'chains'}) || [];
+
 const maxStep = 3; // показываем до 3 переходов
 
-// Уникализируем узлы по «шаг:канал», чтобы один и тот же
-// канал на разных позициях цепочки рисовался как разные узлы.
+// Узлы уникальны по «шаг:канал»: один и тот же канал
+// на разных позициях цепочки рисуется как разные узлы.
 const seen = new Set();
 const nodes = [];
 const links = [];
@@ -375,12 +402,13 @@ function nodeId(step, channel) {
     return id;
 }
 
-for (const [from, to, step, visits] of rows) {
+for (const r of rows) {
+    const step = Number(r['Шаг']);
     if (step > maxStep) continue;
     links.push({
-        from: nodeId(step, from),
-        to: nodeId(step + 1, to),
-        weight: Number(visits),
+        from:   nodeId(step,     r['Откуда']),
+        to:     nodeId(step + 1, r['Куда']),
+        weight: Number(r['Визиты цепочки']),
     });
 }
 
@@ -393,9 +421,6 @@ module.exports = {
             type: 'sankey',
             name: 'Путь клиента',
             data: links,
-            // В Gravity UI Charts узлы обычно выводятся из from/to,
-            // но sankey также принимает явный nodes-массив —
-            // оставим для читаемости и корректного порядка.
             nodes,
         }],
     },
@@ -404,16 +429,21 @@ module.exports = {
 };
 ```
 
+`Dataset.getDatasetRows({datasetName})` возвращает массив объектов,
+ключи = **человекочитаемые названия полей** из датасета (те, что
+мы задавали в §3/§4 — поэтому читаем `r['Откуда']`, `r['Шаг']` и т.д.).
+
 3. Нажми **Выполнить** — в Preview справа должен отрисоваться Sankey.
-   Если ругается на схему — проверь `series.data[0].type` (строго
-   `'sankey'`), `data[].weight` (Number, не String), и что в `Sources`
-   датасет действительно назван `chains`.
+   Если ругается — проверь Console (правая панель):
+   - `series.data[0].type` строго `'sankey'`,
+   - UUID датасета в Meta совпадает с реальным,
+   - имена колонок в Sources/Prepare совпадают с названиями полей
+     датасета (регистр и пробелы важны).
 
 #### Остальные вкладки
 
-- **Meta** — название чарта (`Путь клиента: источник → источник`).
-- **Params** — пока пусто; сюда можно вынести `maxStep` как параметр
-  в v2, чтобы пользователь крутил глубину из чарта.
+- **Params** — можно вынести `maxStep` как параметр в v2, чтобы
+  пользователь крутил глубину цепочек прямо из чарта.
 - **Config** — оставь дефолтным.
 - **Controls / Activities** — не трогаем.
 
