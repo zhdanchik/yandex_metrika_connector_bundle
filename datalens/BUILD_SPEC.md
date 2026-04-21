@@ -345,12 +345,15 @@ Sankey нет в Wizard и в QL — делаем через **Чарт в Edito
 
 #### Вкладка **Meta** — alias для датасета
 
-```js
-module.exports = {
-    links: {
-        chainsDataset: '<UUID_датасета_ds_chains>',
-    },
-};
+**Важно:** Meta — это JSON, не JavaScript. Без `module.exports`,
+без `require`. Просто объект.
+
+```json
+{
+    "links": {
+        "chainsDataset": "<UUID_датасета_ds_chains>"
+    }
+}
 ```
 
 > UUID датасета: в воркбуке на вкладке **Датасеты** у `ds_chains`
