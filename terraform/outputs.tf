@@ -38,18 +38,8 @@ output "trigger_id" {
   value       = module.scheduler.trigger_id
 }
 
-# ──────────────────────────────────────────────────────────────
-# DataLens: ссылка на импорт готового дашборда.
-# Connection к ClickHouse создаётся пользователем руками в UI
-# (провайдер пока не поддерживает CH в yandex_datalens_connection).
-# См. datalens/BUILD_SPEC.md и раздел «DataLens dashboard» в README.
-# ──────────────────────────────────────────────────────────────
-
-output "datalens_import_url" {
-  description = <<-EOT
-    Deep-link для импорта datalens/dashboard.json в DataLens.
-    Открой URL, выбери файл dashboard.json, затем на шаге привязки
-    подключения укажи ClickHouse-кластер (cluster_id из clickhouse_cluster_id).
-  EOT
-  value       = "https://datalens.yandex.cloud/workbooks/import?folderId=${var.folder_id}"
-}
+# DataLens вход — https://datalens.yandex.cloud/collections.
+# Раньше тут был terraform output с этой ссылкой, но она константа
+# (никаких folder_id / workbook_id в deep-link), поэтому вывод убран —
+# пользователь открывает URL напрямую. Подробный flow импорта — в
+# README §«Импорт дашборда» и datalens/BUILD_SPEC.md.

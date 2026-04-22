@@ -29,6 +29,40 @@ require_bin() {
   done
 }
 
+# Ensure `terraform init` will find providers. registry.terraform.io is
+# blocked for RU IPs since 2022; Yandex Cloud publishes a mirror containing
+# yandex-cloud/yandex plus the hashicorp providers we use. Precedence:
+#   1. TF_CLI_CONFIG_FILE already set        → honor user override
+#   2. ~/.terraformrc has network_mirror     → honor user config
+#   3. registry.terraform.io reachable       → do nothing, use direct
+#   4. unreachable                           → export TF_CLI_CONFIG_FILE
+#                                              pointing at repo mirror config
+ensure_tf_cli_config() {
+  if [ -n "${TF_CLI_CONFIG_FILE:-}" ]; then
+    log "  TF_CLI_CONFIG_FILE already set: $TF_CLI_CONFIG_FILE"
+    return 0
+  fi
+  if [ -f "$HOME/.terraformrc" ] && grep -q 'network_mirror' "$HOME/.terraformrc"; then
+    log "  ~/.terraformrc has network_mirror — honoring user config"
+    return 0
+  fi
+  # -sS (silent+show-errors) without -f, so we always get the HTTP code on
+  # stdout and never mix it with an "000" fallback on non-2xx responses.
+  local code
+  code=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' \
+         https://registry.terraform.io/.well-known/terraform.json 2>/dev/null)
+  code="${code:-000}"
+  if [ "$code" = "200" ]; then
+    log "  registry.terraform.io reachable — using default direct install"
+    return 0
+  fi
+  local cfg="$TF_DIR/terraformrc.yc-mirror"
+  [ -f "$cfg" ] || die "registry.terraform.io unreachable (HTTP $code) and $cfg missing"
+  export TF_CLI_CONFIG_FILE="$cfg"
+  warn "  registry.terraform.io unreachable (HTTP $code) — using YC mirror"
+  warn "  TF_CLI_CONFIG_FILE=$cfg"
+}
+
 # Export a fresh YC IAM token into YC_TOKEN.  IAM tokens expire after ~12h,
 # so every script that drives terraform/yc calls this first.  Returns 0 even
 # on failure so a user authenticated via YC_SERVICE_ACCOUNT_KEY_FILE (where

@@ -246,6 +246,13 @@ pytest --integration tests/test_integration.py -v
 
 > Python SDK `yandexcloud` **больше не нужен**: с переездом Data Transfer в Terraform-модуль все endpoint'ы создаются через провайдер.
 
+**Сетевой доступ к реестру провайдеров.** С 2022 `registry.terraform.io` заблокирован для российских IP. Бандл использует публичное зеркало Yandex Cloud `terraform-mirror.yandexcloud.net`, в котором лежат и `yandex-cloud/yandex`, и нужные нам `hashicorp/archive` + `hashicorp/null`. `scripts/deploy.sh` делает автодетект (пингует registry.terraform.io, при недоступности экспортит `TF_CLI_CONFIG_FILE=terraform/terraformrc.yc-mirror`). Если запускаешь голый `terraform init` вне скриптов — поставь переменную сам:
+> ```bash
+> export TF_CLI_CONFIG_FILE="$(pwd)/terraform/terraformrc.yc-mirror"
+> terraform -chdir=terraform init
+> ```
+> Если у тебя уже есть свой `~/.terraformrc` с `network_mirror` — скрипт его уважает и ничего не делает.
+
 Аутентификация Terraform выполняется через `yc iam create-token` или сервисный аккаунт с ключом (см. [документацию провайдера](https://terraform-provider.yandexcloud.net/)).
 
 > **Внимание: IAM-токен живёт ~12 часов.** Скрипты в `scripts/` перед каждым вызовом `terraform` / `yc` сами делают `yc iam create-token` и экспортируют `YC_TOKEN`, чтобы длинный `apply` не упал посреди исполнения. Это работает, пока профиль `yc` (в `~/.config/yandex-cloud/config.yaml`) сам может получать новые токены — т.е. настроен через SA key file (`yc config set service-account-key …`) или OAuth-токен. Если профиль использует «сырой» IAM-токен (`yc config set token …`), он истекает вместе с первой неудачной попыткой — сначала `yc init` или переключись на SA-ключ.
@@ -599,28 +606,38 @@ DataLens со всей логикой: подключение к ClickHouse, т�
 Выполняется один раз после `terraform apply`. Terraform не автоматизирует
 этот шаг — ни `yandex_datalens_connection`, ни API для CH в DataLens
 пока не поддерживаются Terraform-провайдером (см. [раздел «Что в
-будущих версиях»](datalens/NOTES.md#v2--на-сортировку)).
+будущих версиях»](datalens/NOTES.md#v2--на-сортировку)). Дополнительно:
+в DataLens нет deep-link вида «создать воркбук сразу из JSON» —
+endpoint `/workbooks/import` требует уже существующий `workbookId`.
+Поэтому ссылка ведёт на коллекции, а воркбук создаётся из UI
+(создание поддерживает импорт из файла в том же диалоге).
 
-1. Получи ссылку на форму импорта:
-   ```bash
-   terraform -chdir=terraform output -raw datalens_import_url
-   # → https://datalens.yandex.cloud/workbooks/import?folderId=<folder_id>
-   ```
-2. Открой ссылку в браузере. DataLens откроет диалог **Импортировать
-   воркбук** в нужном каталоге.
-3. Выбери файл `datalens/dashboard.json` из репо. Укажи название
-   и коллекцию (можно создать новую «Атрибуция Метрики»).
-4. На шаге привязки подключения: DataLens покажет пустое
-   **ClickHouse connection** — нажми «Создать новое» / «Привязать»,
-   выбери свой кластер из выпадашки (`terraform output -raw
-   clickhouse_cluster_id` — для сверки) и введи:
-   - **Имя пользователя**: `terraform output -raw clickhouse_db_user`
-     (по умолчанию `analyst`).
+1. Открой список коллекций DataLens:
+   <https://datalens.yandex.cloud/collections>.
+2. Создай (или выбери) коллекцию — например, `Атрибуция Метрики`.
+3. Внутри коллекции жми **Создать → Воркбук**. В диалоге
+   `Создать воркбук`:
+   - **Название** — например, `Дашборд атрибуции`.
+   - **Импорт из файла → Выбрать файл** → `datalens/dashboard.json`.
+   - **Создать**.
+4. После импорта появится диалог **«Воркбук создан»** с предупреждением
+   «Проверьте настройки подключений и при необходимости заново укажите
+   пароли и токены» и строкой `ch_metrika`. Это ожидаемо: в `dashboard.json`
+   connection зашит `mdb_cluster_id` и `host` от исходного кластера,
+   а пароль замаскирован `******` — в твоей установке их нужно переназначить.
+   Жми **«Открыть воркбук»**.
+5. В сайдбаре воркбука найди **ch_metrika** (будет с индикатором ошибки),
+   открой его и заполни:
+   - **Кластер** — свой из выпадашки (сверься с
+     `terraform -chdir=terraform output -raw clickhouse_cluster_id`).
+   - **Имя пользователя**: `analyst` (или что в
+     `terraform -chdir=terraform output -raw clickhouse_db_user`).
    - **Пароль**: тот же, что в `terraform.tfvars` / Lockbox.
    - **Уровень SQL-запросов**: `Подзапросы` (нужно для датасета
      `ds_chains`, даже если Sankey-чарт сейчас не используется).
-5. Подтверди импорт. Все три датасета автоматически привяжутся к
-   созданному подключению, чарты и дашборд откроются с данными.
+   - **Время жизни кэша, с**: `300`.
+6. Жми **«Проверить подключение»** → **«Сохранить»**. Все три датасета
+   автоматически переподтянутся, чарты оживут.
 
 После импорта на дашборде «Атрибуция Метрики — Витрина» крути
 селекторы Период / Модель / Источник — всё интерактивно.
@@ -630,9 +647,10 @@ DataLens со всей логикой: подключение к ClickHouse, т�
 | Симптом | Причина и фикс |
 |---------|----------------|
 | «Workbook data hash validation failed» | Кто-то редактировал `datalens/dashboard.json` руками. Файл подписан серверным HMAC — любое изменение ломает импорт. Перевыгрузи из DataLens после правок (см. [BUILD_SPEC §10](datalens/BUILD_SPEC.md#10-экспорт-и-коммит)). |
-| Кластер не виден в выпадашке при создании подключения | Не включён `access.data_lens = true` на MDB-кластере. Проверь: `yc managed-clickhouse cluster get <cluster_id> --format json \| jq .config.access.data_lens`. Если `false` — `terraform apply` должен был выставить флаг; возможно, drift. |
+| Диалог «Воркбук создан» с ворнингом у `ch_metrika` | Ожидаемо после первого импорта: в JSON зашиты cluster_id и host исходного кластера, а пароль замаскирован. Открой воркбук → `ch_metrika` → выбери свой кластер из выпадашки, введи пароль, сохрани. |
+| Кластер не виден в выпадашке при настройке connection | Не включён `access.data_lens = true` на MDB-кластере. Проверь: `yc managed-clickhouse cluster get <cluster_id> --format json \| jq .config.access.data_lens`. Если `false` — `terraform apply` должен был выставить флаг; возможно, drift. |
 | «Permission denied» при импорте | У пользователя нет роли `datalens.instances.user` в организации или `datalens.admin` на целевой коллекции. Выдай через YC Identity Hub. |
-| Датасеты привязались, но чарты красные («Connection error») | Пароль при создании подключения был введён неверно. Открой подключение → проверь пароль → сохрани. Чарты автоматически переподтянутся. |
+| Датасеты привязались, но чарты красные («Connection error») | Пароль при настройке подключения был введён неверно. Открой подключение → проверь пароль → сохрани. Чарты автоматически переподтянутся. |
 | Дашборд импортировался, но селекторы ничего не фильтруют | Редкий баг — Связи не переехали. В редакторе дашборда → **Связи** → проверь, что три селектора привязаны к чартам (схема должна совпадать с [BUILD_SPEC §9](datalens/BUILD_SPEC.md#9-глобальные-селекторы)). |
 | Хочу поправить dashboard.json | Не редактируй файл напрямую (хэш-валидация). Импортируй в свой воркбук → поправь в UI → **Экспортировать** → закоммить новый файл. См. [BUILD_SPEC §10](datalens/BUILD_SPEC.md#10-экспорт-и-коммит). |
 
@@ -666,5 +684,5 @@ endpoint приватный, без публичного SLA, контракт �
 - [x] **Part A** — Ядро трансформаций (SQL + Cloud Function + тесты)
 - [x] **Part B** — Terraform-модуль (протестирован end-to-end на реальном кластере YC)
 - [x] **Part C** — Выбор цели конверсии (`scripts/pick_goal.py` — интерактивный picker)
-- [x] **Part D** — DataLens-дашборд (`datalens/dashboard.json` + BUILD_SPEC + NOTES)
+- [x] **Part D** — DataLens-дашборд (`datalens/dashboard.json` + BUILD_SPEC + NOTES, протестирован end-to-end: импорт в чистый воркбук → перенастройка `ch_metrika` → чарты с данными)
 - [ ] **Part E** — Упаковка в Marketplace
