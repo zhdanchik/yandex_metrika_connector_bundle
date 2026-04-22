@@ -39,17 +39,26 @@ output "trigger_id" {
 }
 
 # ──────────────────────────────────────────────────────────────
-# DataLens: ссылка на импорт готового дашборда.
-# Connection к ClickHouse создаётся пользователем руками в UI
-# (провайдер пока не поддерживает CH в yandex_datalens_connection).
-# См. datalens/BUILD_SPEC.md и раздел «DataLens dashboard» в README.
+# DataLens: точка входа для импорта готового дашборда.
+# В DataLens нет deep-link «создать воркбук и сразу импорт JSON
+# в него»: /workbooks/import требует уже существующий workbookId.
+# Поэтому отдаём ссылку на список коллекций — пользователь сам:
+#   1. создаёт/выбирает коллекцию,
+#   2. создаёт пустой воркбук,
+#   3. внутри воркбука → «⋯» → «Импортировать» → datalens/dashboard.json.
+# Connection к ClickHouse также создаётся руками (TF-провайдер пока
+# не умеет yandex_datalens_connection для CH — см. datalens/NOTES.md).
+# Полный рецепт — datalens/BUILD_SPEC.md §§1-2, troubleshooting — README.
 # ──────────────────────────────────────────────────────────────
 
 output "datalens_import_url" {
   description = <<-EOT
-    Deep-link для импорта datalens/dashboard.json в DataLens.
-    Открой URL, выбери файл dashboard.json, затем на шаге привязки
-    подключения укажи ClickHouse-кластер (cluster_id из clickhouse_cluster_id).
+    Ссылка на список коллекций DataLens. Далее:
+      1. Создай/выбери коллекцию.
+      2. Создай в ней пустой воркбук.
+      3. Внутри воркбука → «⋯» → «Импортировать» → datalens/dashboard.json.
+      4. На шаге привязки connection укажи clickhouse_cluster_id.
+    Пошагово — в datalens/BUILD_SPEC.md.
   EOT
-  value       = "https://datalens.yandex.cloud/workbooks/import?folderId=${var.folder_id}"
+  value       = "https://datalens.yandex.cloud/collections"
 }
