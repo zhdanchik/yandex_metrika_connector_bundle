@@ -1,0 +1,22 @@
+# Terraform CLI config для сетей, где registry.terraform.io недоступен
+# (с 2022 заблокирован для российских IP). Yandex Cloud поддерживает
+# публичное зеркало, которое отдаёт и yandex-cloud/yandex, и hashicorp/*
+# провайдеры — бандл использует его.
+#
+# Как применяется:
+#   * scripts/deploy.sh вызывает ensure_tf_cli_config() из lib.sh,
+#     которая при недоступности registry.terraform.io экспортит
+#     TF_CLI_CONFIG_FILE, указывая на этот файл;
+#   * для голого `terraform init` вне скриптов — руками:
+#         export TF_CLI_CONFIG_FILE="$(pwd)/terraform/terraformrc.yc-mirror"
+#         terraform -chdir=terraform init
+#
+# Зеркало: https://yandex.cloud/ru/docs/tutorials/infrastructure-management/terraform-quickstart
+provider_installation {
+  network_mirror {
+    url = "https://terraform-mirror.yandexcloud.net/"
+  }
+  direct {
+    exclude = ["registry.terraform.io/*/*"]
+  }
+}

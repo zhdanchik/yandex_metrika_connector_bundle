@@ -20,6 +20,9 @@ require_bin terraform
 hdr "Refreshing YC IAM token"
 refresh_yc_token
 
+hdr "Terraform CLI config"
+ensure_tf_cli_config
+
 hdr "Terraform init"
 terraform -chdir="$TF_DIR" init -input=false
 

@@ -246,6 +246,13 @@ pytest --integration tests/test_integration.py -v
 
 > Python SDK `yandexcloud` **больше не нужен**: с переездом Data Transfer в Terraform-модуль все endpoint'ы создаются через провайдер.
 
+**Сетевой доступ к реестру провайдеров.** С 2022 `registry.terraform.io` заблокирован для российских IP. Бандл использует публичное зеркало Yandex Cloud `terraform-mirror.yandexcloud.net`, в котором лежат и `yandex-cloud/yandex`, и нужные нам `hashicorp/archive` + `hashicorp/null`. `scripts/deploy.sh` делает автодетект (пингует registry.terraform.io, при недоступности экспортит `TF_CLI_CONFIG_FILE=terraform/terraformrc.yc-mirror`). Если запускаешь голый `terraform init` вне скриптов — поставь переменную сам:
+> ```bash
+> export TF_CLI_CONFIG_FILE="$(pwd)/terraform/terraformrc.yc-mirror"
+> terraform -chdir=terraform init
+> ```
+> Если у тебя уже есть свой `~/.terraformrc` с `network_mirror` — скрипт его уважает и ничего не делает.
+
 Аутентификация Terraform выполняется через `yc iam create-token` или сервисный аккаунт с ключом (см. [документацию провайдера](https://terraform-provider.yandexcloud.net/)).
 
 > **Внимание: IAM-токен живёт ~12 часов.** Скрипты в `scripts/` перед каждым вызовом `terraform` / `yc` сами делают `yc iam create-token` и экспортируют `YC_TOKEN`, чтобы длинный `apply` не упал посреди исполнения. Это работает, пока профиль `yc` (в `~/.config/yandex-cloud/config.yaml`) сам может получать новые токены — т.е. настроен через SA key file (`yc config set service-account-key …`) или OAuth-токен. Если профиль использует «сырой» IAM-токен (`yc config set token …`), он истекает вместе с первой неудачной попыткой — сначала `yc init` или переключись на SA-ключ.
