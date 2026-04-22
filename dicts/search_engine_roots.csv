@@ -1,3 +1,9 @@
 id,name_ru
-# TrafficSource.SearchEngineRootID → русское название
-# Заполняется пользователем; см. dicts/README.md для источника.
+26,Яндекс
+27,Google
+33,Rambler
+34,Mail.ru
+36,Yahoo!
+84,Bing
+114,DuckDuckGo
+228,Другая поисковая система: определено по меткам

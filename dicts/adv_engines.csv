@@ -1,3 +1,26 @@
 id,name_ru
-# TrafficSource.AdvEngineID → русское название
-# Заполняется пользователем; см. dicts/README.md для источника.
+1,Яндекс
+2,Google Ads
+5,Линк.ру
+17,AdRiver
+37,ВКонтакте
+38,Facebook
+39,Одноклассники
+46,Admitad
+48,Таргет@Mail.ru
+49,Апорт
+50,Price.ru
+56,Direct/ADVERT
+76,Instagram
+81,Другая реклама: определено по меткам
+82,YouTube
+90,TikTok
+91,Яндекс ПромоСтраницы
+94,VK Реклама
+95,Ozon
+96,Adv.Cake
+97,ГдеСлон
+99,Flocktory
+100,Perfluence
+107,Telegram
+109,Авито Реклама

@@ -1,3 +1,16 @@
 id,name_ru
-# TrafficSource.SocialSourceNetworkID → русское название
-# Заполняется пользователем; см. dicts/README.md для источника.
+1,ВКонтакте
+2,X
+3,Facebook
+4,Одноклассники
+5,Liveinternet
+6,Livejournal
+10,Мой Мир@Mail.Ru
+15,Linked in
+33,instagram.com
+36,Pinterest
+37,Постила
+38,Фотострана
+39,Reddit
+43,Другая социальная сеть: определено по меткам
+45,Яндекс Ритм
