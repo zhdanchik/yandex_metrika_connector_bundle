@@ -33,6 +33,9 @@ datalens/
   BUILD_SPEC.md              # Пошаговая инструкция ручной сборки дашборда
   NOTES.md                   # Обоснования решений, известные ограничения, v2 TODO
   dashboard.json             # Экспортированный workbook (результат сборки)
+marketplace/
+  SOLUTION.md                # Листинг YC Marketplace Solution (v1 — ссылка на репо)
+  V2_TZ.md                   # ТЗ для команды YC: что нужно для native TF product (v2)
 pyproject.toml               # pytest-конфигурация
 ```
 
@@ -679,10 +682,29 @@ endpoint приватный, без публичного SLA, контракт �
 
 ---
 
+## Marketplace
+
+v1 публикуется как **Yandex Cloud Marketplace Solution** — статический
+листинг со ссылкой на этот репозиторий и пошаговой инструкцией по
+развёртыванию через `terraform apply`. Native Terraform product
+(кнопка «Развернуть» в UI с wizard'ом) — roadmap v2, требует
+доработок на стороне команды YC.
+
+- [`marketplace/SOLUTION.md`](marketplace/SOLUTION.md) — текст
+  Marketplace-листинга (user-facing, RU): что разворачивается,
+  предусловия, деплой в одну команду, безопасность, troubleshooting-витрина.
+- [`marketplace/V2_TZ.md`](marketplace/V2_TZ.md) — формальное ТЗ для
+  команды Yandex Cloud на v2: три блока (Metrika `period` в публичном
+  API / DataLens workbook import / Marketplace wizard с динамическими
+  полями) с acceptance-критериями.
+
+---
+
 ## Статус разработки
 
 - [x] **Part A** — Ядро трансформаций (SQL + Cloud Function + тесты)
 - [x] **Part B** — Terraform-модуль (протестирован end-to-end на реальном кластере YC)
 - [x] **Part C** — Выбор цели конверсии (`scripts/pick_goal.py` — интерактивный picker)
 - [x] **Part D** — DataLens-дашборд (`datalens/dashboard.json` + BUILD_SPEC + NOTES, протестирован end-to-end: импорт в чистый воркбук → перенастройка `ch_metrika` → чарты с данными)
-- [ ] **Part E** — Упаковка в Marketplace
+- [x] **Part E v1** — Marketplace Solution: [`marketplace/SOLUTION.md`](marketplace/SOLUTION.md) (user-facing листинг) + [`marketplace/V2_TZ.md`](marketplace/V2_TZ.md) (ТЗ для YC на v2)
+- [ ] **Part E v2** — Native Marketplace Terraform product — ждёт поддержки со стороны YC по блокам A/B/C из [`V2_TZ.md`](marketplace/V2_TZ.md)
