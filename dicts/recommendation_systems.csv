@@ -1,0 +1,3 @@
+id,name_ru
+# TrafficSource.RecommendationSystemID → русское название
+# Заполняется пользователем; см. dicts/README.md для источника.

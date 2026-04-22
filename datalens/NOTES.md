@@ -98,17 +98,31 @@ Internal BFF DataLens (`POST /api/internal/v1/workbooks/import/`)
 Переключение модели перерисовывает график — это и есть видимая
 разница между моделями во времени.
 
-### Названия источников через префиксный CASE — с id в скобках
+### Имена источников — готовая колонка в view, словари в dicts/
 
-Таблица кодов `TraficSourceID` из Метрики иерархичная: `2_621` и
-`2_1` — оба «Поиск», но разные поисковики. Простая группировка
-«2_* → Поиск» потеряла бы различие.
+Префиксный CASE в датасете больше не используется.  Имена приходят
+готовой строкой в колонке `source_name` у представления
+`v_attribution_results` (см. `sql/01_schema.sql`).
 
-Компромисс v1: 1-к-1 коды (-1, 0, 1, 4-7, 11) переименовываем
-человекочитаемо, префиксные семейства (2_*, 3_*, 8_*, 9_*, 10_*)
-оставляем с id в скобках: `Поиск (2_621)`, `Социальные сети (8_1)`.
-Уродливо, но не теряет гранулярности до появления нормального
-словаря имён (см. v2 ниже).
+Что меняется:
+
+- `SearchEngineID` в `02_prepare_visits.sql` заменён на
+  `SearchEngineRootID` — коллапсит вариации «Яндекс.Поиск /
+  Картинки / Карты» в один бакет «Яндекс».  SourceCode вида
+  `2_<root>` теперь имеет смысл «поиск такой-то системы», а не
+  «конкретный поддомен поиска».
+- Пять словарей `dict_*` в ClickHouse заполняются из CSV в
+  папке `dicts/` (грузит `handler.py` при каждом прогоне).  Формат
+  CSV — `id,name_ru`, см. `dicts/README.md`.
+- View `v_attribution_results` JOIN'ит словари и склеивает префикс
+  типа источника (hardcoded, т.к. их всего 12 и они стабильны)
+  с именем из словаря.
+- Fallback при отсутствующем id: `"Поиск: код 1234"` — данные не
+  теряются, подпись становится читаемой после дополнения CSV.
+
+DataLens-датасет `ds_attribution` теперь смотрит на view, а не на
+таблицу — см. BUILD_SPEC §3.  Calc-поля «Название источника» больше
+не нужно.
 
 ---
 
@@ -126,42 +140,25 @@ Internal BFF DataLens (`POST /api/internal/v1/workbooks/import/`)
   но требует ~50 строк layout-кода руками (require внешних модулей
   в редакторе нет) — не стоит этого в v1.
 
-Датасет `ds_chains` и Editor-API (Meta/Source/Prepare) задокументированы
-в BUILD_SPEC §4 и готовы к v2 — Sankey-чарт встанет поверх них.
+**Замена**: вместо Sankey — тепловая карта переходов (`ch_transitions_heatmap`
+в BUILD_SPEC §7), датасет `ds_transitions` над таблицей
+`source_transitions`, заполняемой в `05_attribution_models.sql`.
+Показывает те же данные prev→next, но в виде матрицы, а не потоков;
+отрисовывается штатным heatmap-виджетом без Editor-костылей.  Если
+однажды в Gravity UI Charts завезут нативный sankey — встанет на
+тот же датасет без миграции данных.
 
 ---
 
 ## v2 — на сортировку
 
-### Настоящие имена источников из данных
+### Нативный Sankey (когда появится в Gravity UI Charts)
 
-Заменить префиксный CASE в calc-поле «Название источника атрибуции»
-на JOIN/LOOKUP по реальным *StrID-колонкам Метрики:
-
-| Числовой ID | Строковая пара |
-|-------------|---------------|
-| `SearchEngineID` | `SearchEngineStrID` |
-| `AdvEngineID` | `AdvEngineStrID` |
-| `SocialSourceNetworkID` | `SocialSourceNetworkStrID` |
-| `RecommendationSystemID` | `RecommendationSystemStrID` |
-| `MessengerID` | `MessengerStrID` |
-
-Работа:
-1. Добавить `*StrID` в схему `visits_prepared` (и дальше по пайплайну
-   до `attribution_results`), либо сделать отдельный lookup-датамарт
-   `source_names`.
-2. Поменять calc-поле на JOIN по id → str.
-3. Выкинуть префиксный CASE из spec.
-
-### Sankey цепочек касаний
-
-Датасет `ds_chains` (§4 BUILD_SPEC) уже готов. Два пути:
-
-- Дождаться нативного `type: 'sankey'` в Gravity UI Charts
-  (тривиально после этого).
-- Сейчас — Advanced-чарт на HTML+SVG с вручную написанным
-  sankey-layout'ом (~50 строк + ~20 строк JS преобразования данных
-  в `{nodes, links}`).
+Данные для сanky уже лежат в `source_transitions` (prev→next,
+count) — это тот же контракт `{nodes, links}`, который ожидает
+d3-sankey.  Как только в Gravity UI Charts завезут `type: 'sankey'`,
+тепловая карта `ch_transitions_heatmap` меняется на Sankey без
+переработки пайплайна — только правка Editor-шаблона.
 
 ### WoW-дельта в KPI
 

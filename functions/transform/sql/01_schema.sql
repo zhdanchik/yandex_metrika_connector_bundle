@@ -33,10 +33,14 @@ CREATE TABLE IF NOT EXISTS visits_raw
 
     -- Traffic source data as a Nested (parallel arrays).
     -- Use indexOf(TrafficSource.Model, 1) to find the primary source.
+    -- NOTE: SearchEngineRootID must be included in the YC Data Transfer
+    -- visits-table config (it is the parent grouping of SearchEngineID —
+    -- e.g. SearchEngineID=621 "Яндекс.Поиск" maps to RootID=2 "Яндекс").
     `TrafficSource.Model`                  Array(UInt8),
     `TrafficSource.ID`                     Array(Int8),
     `TrafficSource.StartTime`              Array(DateTime),
     `TrafficSource.SearchEngineID`         Array(UInt16),
+    `TrafficSource.SearchEngineRootID`     Array(UInt16),
     `TrafficSource.AdvEngineID`            Array(UInt8),
     `TrafficSource.SocialSourceNetworkID`  Array(UInt8),
     `TrafficSource.RecommendationSystemID` Array(UInt8),
@@ -118,24 +122,156 @@ SETTINGS index_granularity = 8192;
 -- RESULT TABLES  (rebuilt daily by Cloud Function)
 -- ============================================================
 
--- All four attribution models in one table, one row per
+-- All attribution models in one table, one row per
 -- (goal, model, date, channel).
 -- Computed directly from visits_combined by 05_attribution_models.sql.
 --
--- attribution_type : 'first_touch' | 'last_touch' | 'linear' | 'time_decay'
+-- attribution_type : 'first_touch' | 'last_touch' | 'last_significant' |
+--                    'linear' | 'time_decay'
 -- start_date       : date of the chain's endpoint visit (for time-series viz)
+--
+-- assisted_conversions / assisted_revenue — number of converting chains
+-- where this source appeared but was NOT the last touch.  Model-independent
+-- metric, populated only on 'last_touch' rows to avoid double-counting when
+-- aggregating across models.  For other rows both columns are 0.
 CREATE TABLE IF NOT EXISTS attribution_results
 (
-    goal_id             UInt32,
-    attribution_type    LowCardinality(String),
-    start_date          Date,
-    source_code         String,
-    visits              Float64,
-    conversions         Float64,
-    revenue             Float64,
-    calculated_at       DateTime    DEFAULT now()
+    goal_id                UInt32,
+    attribution_type       LowCardinality(String),
+    start_date             Date,
+    source_code            String,
+    visits                 Float64,
+    conversions            Float64,
+    revenue                Float64,
+    assisted_conversions   Float64     DEFAULT 0,
+    assisted_revenue       Float64     DEFAULT 0,
+    calculated_at          DateTime    DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(calculated_at)
 PARTITION BY goal_id
 ORDER BY (goal_id, attribution_type, start_date, source_code)
 SETTINGS index_granularity = 8192;
+
+
+-- Source-to-source transition matrix.  One row per
+-- (goal, date, prev_source, next_source) aggregated from consecutive
+-- pairs in visits_combined chains.  Powers the "poor man's Sankey" —
+-- a heatmap of channel transitions in DataLens.
+--
+-- transitions        : count of such pair occurrences (chain-weighted)
+-- converting_chains  : sum of the pair's chain.Conversions (same pair in
+--                      a 3-hop converting chain counts once; 0 in a chain
+--                      that did not convert on the endpoint visit).
+CREATE TABLE IF NOT EXISTS source_transitions
+(
+    goal_id             UInt32,
+    start_date          Date,
+    prev_source_code    String,
+    next_source_code    String,
+    transitions         Float64,
+    converting_chains   Float64,
+    calculated_at       DateTime    DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(calculated_at)
+PARTITION BY goal_id
+ORDER BY (goal_id, start_date, prev_source_code, next_source_code)
+SETTINGS index_granularity = 8192;
+
+
+-- ============================================================
+-- LOOKUP TABLES  (rebuilt by handler.py from dicts/*.csv on every run)
+-- ============================================================
+-- Simple (id → human-readable Russian name) maps for the five
+-- Yandex-Metrika sub-source vocabularies used in SourceCode.
+--
+-- Populated by handler.py: TRUNCATE + bulk-INSERT from the five CSV
+-- files in dicts/ (bundled into the function ZIP).  Thin regular tables
+-- keep DataLens free to LEFT JOIN without CH-dictionary machinery.
+--
+-- See dicts/README.md for the CSV format and v_attribution_results
+-- below for how these tables become human-readable source_name.
+
+CREATE TABLE IF NOT EXISTS dict_search_engine_roots
+(
+    id       UInt16,
+    name_ru  String
+) ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS dict_adv_engines
+(
+    id       UInt8,
+    name_ru  String
+) ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS dict_social_networks
+(
+    id       UInt8,
+    name_ru  String
+) ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS dict_recommendation_systems
+(
+    id       UInt8,
+    name_ru  String
+) ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS dict_messengers
+(
+    id       UInt8,
+    name_ru  String
+) ENGINE = MergeTree ORDER BY id;
+
+
+-- ============================================================
+-- VIEW: human-readable attribution_results
+-- ============================================================
+-- Resolves source_code into source_name (Russian) via the dict_*
+-- tables.  Names for TraficSourceID roots are hardcoded (only 12
+-- values, stable forever) — sub-IDs are resolved via LEFT JOIN.
+--
+-- Fallback when a sub-ID is missing from the dict: "Родитель (код)"
+-- so data is never silently lost.  Install the CSVs into dicts/ and
+-- the fallbacks disappear.
+CREATE OR REPLACE VIEW v_attribution_results AS
+WITH
+    parts AS (
+        SELECT
+            *,
+            splitByChar('_', source_code)                         AS p,
+            toInt16OrNull(splitByChar('_', source_code)[1])       AS root_id,
+            toInt32OrZero(splitByChar('_', source_code)[2])       AS sub_id
+        FROM attribution_results
+    )
+SELECT
+    p.goal_id,
+    p.attribution_type,
+    p.start_date,
+    p.source_code,
+    p.visits,
+    p.conversions,
+    p.revenue,
+    p.assisted_conversions,
+    p.assisted_revenue,
+    p.calculated_at,
+    multiIf(
+        p.root_id = -1, 'Внутренние переходы',
+        p.root_id =  0, 'Прямые заходы',
+        p.root_id =  1, 'Переходы по ссылкам на сайтах',
+        p.root_id =  2, concat('Поиск: ', coalesce(nullIf(se.name_ru, ''), concat('код ', toString(p.sub_id)))),
+        p.root_id =  3, concat('Реклама: ', coalesce(nullIf(ad.name_ru, ''), concat('код ', toString(p.sub_id)))),
+        p.root_id =  4, 'С сохранённых страниц',
+        p.root_id =  5, 'Источник не определён',
+        p.root_id =  6, 'По внешним ссылкам',
+        p.root_id =  7, 'Почтовые рассылки',
+        p.root_id =  8, concat('Соцсети: ', coalesce(nullIf(sn.name_ru, ''), concat('код ', toString(p.sub_id)))),
+        p.root_id =  9, concat('Рекомендации: ', coalesce(nullIf(rs.name_ru, ''), concat('код ', toString(p.sub_id)))),
+        p.root_id = 10, concat('Мессенджеры: ', coalesce(nullIf(ms.name_ru, ''), concat('код ', toString(p.sub_id)))),
+        p.root_id = 11, 'QR-код',
+        p.source_code
+    ) AS source_name
+FROM parts AS p
+LEFT JOIN dict_search_engine_roots    AS se ON p.root_id = 2  AND toUInt16(p.sub_id) = se.id
+LEFT JOIN dict_adv_engines            AS ad ON p.root_id = 3  AND toUInt8(p.sub_id)  = ad.id
+LEFT JOIN dict_social_networks        AS sn ON p.root_id = 8  AND toUInt8(p.sub_id)  = sn.id
+LEFT JOIN dict_recommendation_systems AS rs ON p.root_id = 9  AND toUInt8(p.sub_id)  = rs.id
+LEFT JOIN dict_messengers             AS ms ON p.root_id = 10 AND toUInt8(p.sub_id)  = ms.id;

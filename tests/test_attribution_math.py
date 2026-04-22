@@ -7,7 +7,7 @@ correct results on synthetic data drawn from fixtures.py.
 
 SourceCode values used in assertions (see fixtures.py for full mapping):
   "3_1"   Yandex Direct (trafic_source_id=3, adv_engine_id=1)
-  "2_621" Yandex organic (trafic_source_id=2, search_engine_id=621)
+  "2_621" Yandex organic (trafic_source_id=2, search_engine_root_id=621)
   "6"     direct / typed URL (trafic_source_id=6)
   "7"     email (trafic_source_id=7)
   "8_1"   VK social (trafic_source_id=8, social_source_network_id=1)
@@ -24,10 +24,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from attribution_math import (
     build_chains,
+    compute_assisted_conversions,
     compute_first_touch,
+    compute_last_significant,
     compute_last_touch,
     compute_linear,
     compute_time_decay,
+    compute_transitions,
     derive_source_code,
 )
 from fixtures import (
@@ -48,8 +51,8 @@ from fixtures import (
 
 class TestDeriveSourceCode:
     def test_organic_search_appends_engine_id(self):
-        assert derive_source_code(2, search_engine_id=621) == "2_621"
-        assert derive_source_code(2, search_engine_id=1) == "2_1"
+        assert derive_source_code(2, search_engine_root_id=621) == "2_621"
+        assert derive_source_code(2, search_engine_root_id=1) == "2_1"
 
     def test_advertising_appends_adv_engine_id(self):
         assert derive_source_code(3, adv_engine_id=1) == "3_1"   # Yandex Direct
@@ -297,7 +300,7 @@ class TestTimeDecay:
              "trafic_source_id": 3, "adv_engine_id": 1},
             {"user_id": 10, "visit_id": 102, "counter_id": 1,
              "utc_start_time": datetime(2024, 6, 1, 11, 0), "goals_id": [],
-             "trafic_source_id": 2, "search_engine_id": 621},
+             "trafic_source_id": 2, "search_engine_root_id": 621},
             {"user_id": 10, "visit_id": 103, "counter_id": 1,
              "utc_start_time": datetime(2024, 6, 1, 12, 0), "goals_id": [GOAL_ID],
              "trafic_source_id": 6},
@@ -327,6 +330,7 @@ class TestCrossModelInvariants:
     @pytest.mark.parametrize("model_fn", [
         compute_first_touch,
         compute_last_touch,
+        compute_last_significant,
         compute_linear,
         lambda chains: compute_time_decay(chains, half_life=7.0),
     ])
@@ -338,6 +342,7 @@ class TestCrossModelInvariants:
     @pytest.mark.parametrize("model_fn", [
         compute_first_touch,
         compute_last_touch,
+        compute_last_significant,
         compute_linear,
         lambda chains: compute_time_decay(chains, half_life=7.0),
     ])
@@ -366,3 +371,139 @@ class TestCrossModelInvariants:
         assert linear["2_621"] == pytest.approx(0.5)
         assert first["2_621"] > linear["2_621"]
         assert last.get("2_621", 0.0) < linear["2_621"]
+
+
+# ---------------------------------------------------------------------------
+# Last-significant model
+# ---------------------------------------------------------------------------
+
+class TestLastSignificant:
+    """
+    Non-significant roots are TraficSourceID ∈ (-1, 0, 4, 5, 6).
+    Last-significant credits the most-recent *significant* touchpoint,
+    falling back to last-touch if none exist.
+    """
+
+    def test_two_touch_skips_non_significant_last(self):
+        # Chain: 2_621 (significant) → 6 (non-significant, converts)
+        # last_significant should credit 2_621.
+        chains = build_chains(two_touch_visits(), GOAL_ID)
+        result = compute_last_significant(chains)
+        assert result == {"2_621": 1.0}
+
+    def test_three_touch_picks_latest_significant(self):
+        # Chain: 2_621 → 3_1 → 6.  Last non-significant is 6; the
+        # latest significant is 3_1.
+        chains = build_chains(three_touch_visits(), GOAL_ID)
+        result = compute_last_significant(chains)
+        assert result == {"3_1": 1.0}
+
+    def test_falls_back_to_last_touch_when_all_non_significant(self):
+        visits = [
+            {"user_id": 20, "visit_id": 201, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 10, 0), "goals_id": [],
+             "trafic_source_id": 0},                                    # direct
+            {"user_id": 20, "visit_id": 202, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 11, 0), "goals_id": [GOAL_ID],
+             "trafic_source_id": 6},                                    # external
+        ]
+        chains = build_chains(visits, goal_id=GOAL_ID)
+        result = compute_last_significant(chains)
+        assert result == {"6": 1.0}
+
+    def test_single_significant_touch_full_credit(self):
+        chains = build_chains(single_touch_visits(), GOAL_ID)
+        result = compute_last_significant(chains)
+        assert result == {"3_1": 1.0}
+
+    def test_empty_chains(self):
+        assert compute_last_significant([]) == {}
+
+    def test_differs_from_last_touch_when_last_is_direct(self):
+        """
+        When the last touch is in (0, -1, 4, 5, 6), last_significant ≠ last_touch.
+        """
+        chains = build_chains(two_touch_visits(), GOAL_ID)
+        assert compute_last_touch(chains) != compute_last_significant(chains)
+
+
+# ---------------------------------------------------------------------------
+# Assisted conversions
+# ---------------------------------------------------------------------------
+
+class TestAssistedConversions:
+    def test_single_touch_no_assists(self):
+        chains = build_chains(single_touch_visits(), GOAL_ID)
+        assert compute_assisted_conversions(chains) == {}
+
+    def test_two_touch_first_assists(self):
+        # "2_621" (first) assists for the conversion credited to "6" (last).
+        chains = build_chains(two_touch_visits(), GOAL_ID)
+        result = compute_assisted_conversions(chains)
+        assert result == {"2_621": 1.0}
+
+    def test_three_touch_first_two_assist(self):
+        # Chain 2_621 → 3_1 → 6 (converts).  Both 2_621 and 3_1 assist.
+        chains = build_chains(three_touch_visits(), GOAL_ID)
+        result = compute_assisted_conversions(chains)
+        assert result == {"2_621": 1.0, "3_1": 1.0}
+
+    def test_duplicate_non_last_source_counts_once_per_chain(self):
+        # 2_621 → 2_621 → 6.  Duplicate non-last appearances count as one assist.
+        visits = [
+            {"user_id": 30, "visit_id": 301, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 8, 0), "goals_id": [],
+             "trafic_source_id": 2, "search_engine_root_id": 621},
+            {"user_id": 30, "visit_id": 302, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 9, 0), "goals_id": [],
+             "trafic_source_id": 2, "search_engine_root_id": 621},
+            {"user_id": 30, "visit_id": 303, "counter_id": 1,
+             "utc_start_time": datetime(2024, 6, 1, 10, 0), "goals_id": [GOAL_ID],
+             "trafic_source_id": 6},
+        ]
+        chains = build_chains(visits, goal_id=GOAL_ID)
+        result = compute_assisted_conversions(chains)
+        assert result == {"2_621": 1.0}
+
+    def test_last_touch_source_gets_no_self_assist(self):
+        # The last-touch source itself never receives assist credit for its own chain.
+        chains = build_chains(two_touch_visits(), GOAL_ID)
+        result = compute_assisted_conversions(chains)
+        assert "6" not in result  # last-touch source
+        assert result.get("2_621", 0.0) == 1.0
+
+    def test_empty_chains(self):
+        assert compute_assisted_conversions([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# Transition matrix
+# ---------------------------------------------------------------------------
+
+class TestTransitions:
+    def test_single_touch_no_transitions(self):
+        chains = build_chains(single_touch_visits(), GOAL_ID)
+        assert compute_transitions(chains) == {}
+
+    def test_two_touch_one_transition(self):
+        chains = build_chains(two_touch_visits(), GOAL_ID)
+        assert compute_transitions(chains) == {("2_621", "6"): 1.0}
+
+    def test_three_touch_two_transitions(self):
+        chains = build_chains(three_touch_visits(), GOAL_ID)
+        assert compute_transitions(chains) == {
+            ("2_621", "3_1"): 1.0,
+            ("3_1", "6"): 1.0,
+        }
+
+    def test_multi_client_aggregates(self):
+        chains = build_chains(multi_client_visits(), GOAL_ID)
+        result = compute_transitions(chains)
+        # client 5: 8_1 → 7 ; client 6: 3_1 → 6 ; client 4: single-touch, nothing.
+        assert result == {
+            ("8_1", "7"): 1.0,
+            ("3_1", "6"): 1.0,
+        }
+
+    def test_empty_chains(self):
+        assert compute_transitions([]) == {}

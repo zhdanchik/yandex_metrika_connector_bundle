@@ -45,7 +45,7 @@ _INSERT_VISITS = """
 INSERT INTO visits_raw
 (CounterID, CounterUserIDHash, VisitID, StartDate, UTCStartTime, Duration, VisitVersion,
  `TrafficSource.Model`, `TrafficSource.ID`, `TrafficSource.StartTime`,
- `TrafficSource.SearchEngineID`, `TrafficSource.AdvEngineID`,
+ `TrafficSource.SearchEngineID`, `TrafficSource.SearchEngineRootID`, `TrafficSource.AdvEngineID`,
  `TrafficSource.SocialSourceNetworkID`, `TrafficSource.RecommendationSystemID`,
  `TrafficSource.MessengerID`, `TrafficSource.ClickBannerID`, `TrafficSource.ClickTargetType`,
  `Goals.ID`, `Goals.Serial`, `Goals.EventTime`, `Goals.Price`, `Goals.Currency`,

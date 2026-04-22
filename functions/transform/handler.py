@@ -7,10 +7,12 @@ Triggered by Cloud Scheduler after YC Data Transfer has finished
 loading the latest Yandex Metrika data into ClickHouse.
 
 Pipeline steps:
+  0. Load source-name dictionaries (dicts/*.csv → dict_* tables)
   1. Prepare visits      (sql/02_prepare_visits.sql)
   2. Compute visit_max_timediff  (inline query — 95th-percentile inter-visit gap)
   3. Combine visits      (sql/03_combine_visits.sql)
-  4. Attribution models  (sql/05_attribution_models.sql)
+  4. Attribution models + assisted + transition matrix
+     (sql/05_attribution_models.sql)
 
 Environment variables (injected by Terraform at deploy time):
   CLICKHOUSE_HOST       ClickHouse cluster hostname
@@ -42,6 +44,17 @@ logging.basicConfig(
 
 # SQL files bundled alongside this handler in the function zip.
 _SQL_DIR = Path(__file__).parent / "sql"
+
+# CSV source-name dictionaries bundled alongside this handler.
+# Mapping: ClickHouse table name → CSV filename.  Row format is id,name_ru.
+_DICTS_DIR = Path(__file__).parent / "dicts"
+_DICT_FILES: dict[str, str] = {
+    "dict_search_engine_roots":    "search_engine_roots.csv",
+    "dict_adv_engines":            "adv_engines.csv",
+    "dict_social_networks":        "social_networks.csv",
+    "dict_recommendation_systems": "recommendation_systems.csv",
+    "dict_messengers":             "messengers.csv",
+}
 
 # Query to compute the 95th-percentile inter-visit gap (seconds).
 _VISIT_MAX_TIMEDIFF_QUERY = """
@@ -271,6 +284,67 @@ def _run_sql_file(
             raise
 
 
+def _parse_dict_csv(path: Path) -> list[tuple[int, str]]:
+    """Parse an id,name_ru CSV; ignore blank lines and comments (#).
+
+    Returns [(id, name_ru), ...].  Silently skips rows with non-integer id
+    or blank names so operator typos don't break the pipeline.
+    """
+    rows: list[tuple[int, str]] = []
+    if not path.exists():
+        return rows
+
+    raw_lines = path.read_text(encoding="utf-8").splitlines()
+    for lineno, line in enumerate(raw_lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if lineno == 1 and stripped.lower().startswith("id,"):
+            continue  # header
+        parts = stripped.split(",", 1)
+        if len(parts) != 2:
+            logger.warning("dict %s:%d malformed (expected id,name_ru): %r",
+                           path.name, lineno, line)
+            continue
+        try:
+            id_int = int(parts[0].strip())
+        except ValueError:
+            logger.warning("dict %s:%d non-integer id: %r",
+                           path.name, lineno, parts[0])
+            continue
+        name = parts[1].strip()
+        if not name:
+            continue
+        rows.append((id_int, name))
+    return rows
+
+
+def _ch_escape_string(s: str) -> str:
+    """Escape a string for inlining into a ClickHouse VALUES tuple."""
+    return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _load_dictionaries(conn: dict) -> None:
+    """Truncate + bulk-insert all dict_* tables from bundled CSVs.
+
+    Missing CSV → table kept truncated (empty); the v_attribution_results
+    view falls back to "<Root>: код <id>" so the pipeline keeps working.
+    """
+    for table, filename in _DICT_FILES.items():
+        path = _DICTS_DIR / filename
+        rows = _parse_dict_csv(path)
+        logger.info("dict %s ← %s: %d rows", table, filename, len(rows))
+
+        _ch_query(conn, f"TRUNCATE TABLE {table}")
+        if not rows:
+            continue
+
+        values = ",".join(
+            f"({id_int},'{_ch_escape_string(name)}')" for id_int, name in rows
+        )
+        _ch_query(conn, f"INSERT INTO {table} (id, name_ru) VALUES {values}")
+
+
 def _compute_visit_max_timediff(conn: dict) -> int:
     """Compute the 95th-percentile inter-visit gap from visits_prepared.
 
@@ -326,6 +400,16 @@ def handler(event: dict, context: Any) -> dict:
         return {"statusCode": 500, "body": f"ClickHouse connection error: {exc}"}
 
     # ----------------------------------------------------------------
+    # Step 0: Load source-name dictionaries.
+    # ----------------------------------------------------------------
+    logger.info("Step 0/4: load_dictionaries")
+    try:
+        _load_dictionaries(conn)
+    except Exception as exc:
+        logger.exception("Step load_dictionaries failed: %s", exc)
+        return {"statusCode": 500, "body": f"Pipeline failed at step 'load_dictionaries': {exc}"}
+
+    # ----------------------------------------------------------------
     # Step 1: Prepare visits (flatten raw → visits_prepared)
     # ----------------------------------------------------------------
     logger.info("Step 1/4: prepare_visits — truncating visits_prepared")
@@ -367,14 +451,19 @@ def handler(event: dict, context: Any) -> dict:
         return {"statusCode": 500, "body": f"Pipeline failed at step 'combine_visits': {exc}"}
 
     # ----------------------------------------------------------------
-    # Step 4: Attribution models
+    # Step 4: Attribution models + assisted + transition matrix
     # ----------------------------------------------------------------
-    logger.info("Step 4/4: attribution_models — dropping partition %s", params["goal_id"])
-    try:
-        _ch_query(conn, f"ALTER TABLE attribution_results DROP PARTITION {params['goal_id']}")
-    except Exception as exc:
-        logger.exception("DROP PARTITION attribution_results failed: %s", exc)
-        return {"statusCode": 500, "body": f"Pipeline failed at step 'attribution_models' (drop partition): {exc}"}
+    logger.info(
+        "Step 4/4: attribution_models — dropping partition %s "
+        "(attribution_results + source_transitions)",
+        params["goal_id"],
+    )
+    for tbl in ("attribution_results", "source_transitions"):
+        try:
+            _ch_query(conn, f"ALTER TABLE {tbl} DROP PARTITION {params['goal_id']}")
+        except Exception as exc:
+            logger.exception("DROP PARTITION %s failed: %s", tbl, exc)
+            return {"statusCode": 500, "body": f"Pipeline failed at step 'attribution_models' (drop partition {tbl}): {exc}"}
     try:
         _run_sql_file(conn, "attribution_models", "05_attribution_models.sql", params)
     except Exception as exc:

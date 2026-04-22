@@ -5,15 +5,17 @@ Visit dicts use the field names from the Data Transfer schema
 (analyse_channels_chain.py) rather than UTM strings:
   user_id, utc_start_time, goals_id, trafic_source_id, etc.
 
-SourceCode reference (for assertions in tests):
-  trafic_source_id=2, search_engine_id=621  → "2_621"  Yandex organic
-  trafic_source_id=2, search_engine_id=1    → "2_1"    Google organic
-  trafic_source_id=3, adv_engine_id=1       → "3_1"    Yandex Direct
-  trafic_source_id=3, adv_engine_id=2       → "3_2"    Google Ads
-  trafic_source_id=6                        → "6"      direct
-  trafic_source_id=7                        → "7"      email
-  trafic_source_id=8, social_id=1           → "8_1"    VK
-  trafic_source_id=0                        → "0"      other referral
+SourceCode reference (for assertions in tests).  Values below are
+opaque test IDs — SearchEngineRootID in production represents the
+parent search-engine grouping, but tests just need stable bucket IDs:
+  trafic_source_id=2, search_engine_root_id=621  → "2_621"  "Яндекс-like"
+  trafic_source_id=2, search_engine_root_id=1    → "2_1"    "Google-like"
+  trafic_source_id=3, adv_engine_id=1            → "3_1"    Yandex Direct
+  trafic_source_id=3, adv_engine_id=2            → "3_2"    Google Ads
+  trafic_source_id=6                             → "6"      external / direct
+  trafic_source_id=7                             → "7"      email
+  trafic_source_id=8, social_id=1                → "8_1"    VK
+  trafic_source_id=0                             → "0"      direct
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ def _visit(
     user_id: int,
     days_ago: float,
     trafic_source_id: int = 0,
-    search_engine_id: int = 0,
+    search_engine_root_id: int = 0,
     adv_engine_id: int = 0,
     social_source_network_id: int = 0,
     recommendation_system_id: int = 0,
@@ -49,7 +51,7 @@ def _visit(
         "counter_id": COUNTER_ID,
         "utc_start_time": T0 - timedelta(days=days_ago),
         "trafic_source_id": trafic_source_id,
-        "search_engine_id": search_engine_id,
+        "search_engine_root_id": search_engine_root_id,
         "adv_engine_id": adv_engine_id,
         "social_source_network_id": social_source_network_id,
         "recommendation_system_id": recommendation_system_id,
@@ -78,7 +80,7 @@ def single_touch_visits() -> List[dict]:
 # ---------------------------------------------------------------------------
 def two_touch_visits() -> List[dict]:
     return [
-        _visit(2, days_ago=5.0, trafic_source_id=2, search_engine_id=621),
+        _visit(2, days_ago=5.0, trafic_source_id=2, search_engine_root_id=621),
         _visit(2, days_ago=0.0, trafic_source_id=6, goals=[GOAL_ID]),
     ]
 
@@ -89,7 +91,7 @@ def two_touch_visits() -> List[dict]:
 # ---------------------------------------------------------------------------
 def three_touch_visits() -> List[dict]:
     return [
-        _visit(3, days_ago=7.0, trafic_source_id=2, search_engine_id=621),
+        _visit(3, days_ago=7.0, trafic_source_id=2, search_engine_root_id=621),
         _visit(3, days_ago=3.0, trafic_source_id=3, adv_engine_id=1),
         _visit(3, days_ago=0.0, trafic_source_id=6, goals=[GOAL_ID]),
     ]
@@ -106,7 +108,7 @@ def three_touch_visits() -> List[dict]:
 def multi_client_visits() -> List[dict]:
     return [
         # client 4: single organic touch
-        _visit(4, days_ago=0.0, trafic_source_id=2, search_engine_id=621,
+        _visit(4, days_ago=0.0, trafic_source_id=2, search_engine_root_id=621,
                goals=[GOAL_ID]),
 
         # client 5: social then email
@@ -126,7 +128,7 @@ def multi_client_visits() -> List[dict]:
 def lookback_window_visits(lookback_days: int = 90) -> List[dict]:
     return [
         _visit(7, days_ago=100.0, trafic_source_id=3, adv_engine_id=2),  # "3_2" Google Ads
-        _visit(7, days_ago=10.0,  trafic_source_id=2, search_engine_id=621),
+        _visit(7, days_ago=10.0,  trafic_source_id=2, search_engine_root_id=621),
         _visit(7, days_ago=0.0,   trafic_source_id=6, goals=[GOAL_ID]),
     ]
 
@@ -137,7 +139,7 @@ def lookback_window_visits(lookback_days: int = 90) -> List[dict]:
 def repeat_converter_visits() -> List[dict]:
     return [
         # First conversion path
-        _visit(8, days_ago=20.0, trafic_source_id=2, search_engine_id=621),
+        _visit(8, days_ago=20.0, trafic_source_id=2, search_engine_root_id=621),
         _visit(8, days_ago=15.0, trafic_source_id=6, goals=[GOAL_ID], visit_id=8001),
         # Second conversion path
         _visit(8, days_ago=5.0,  trafic_source_id=7),
@@ -170,7 +172,8 @@ def visits_to_ch_rows(visits: List[dict]) -> List[tuple]:
             [1],                                             # TrafficSource.Model
             [v.get("trafic_source_id", 0)],                 # TrafficSource.ID
             [v["utc_start_time"]],                           # TrafficSource.StartTime
-            [v.get("search_engine_id", 0)],                 # TrafficSource.SearchEngineID
+            [v.get("search_engine_root_id", 0)],            # TrafficSource.SearchEngineID  (unused since RootID came in)
+            [v.get("search_engine_root_id", 0)],            # TrafficSource.SearchEngineRootID
             [v.get("adv_engine_id", 0)],                    # TrafficSource.AdvEngineID
             [v.get("social_source_network_id", 0)],         # TrafficSource.SocialSourceNetworkID
             [v.get("recommendation_system_id", 0)],         # TrafficSource.RecommendationSystemID

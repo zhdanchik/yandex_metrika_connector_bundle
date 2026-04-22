@@ -112,18 +112,43 @@ attribution_results  (ReplacingMergeTree, PARTITION BY goal_id)
 
 | Поле | Тип | Описание |
 |------|-----|----------|
-| `attribution_type` | LowCardinality(String) | `first_touch` / `last_touch` / `linear` / `time_decay` |
+| `attribution_type` | LowCardinality(String) | `first_touch` / `last_touch` / `last_significant` / `linear` / `time_decay` |
 | `start_date` | Date | Дата последнего визита цепочки |
 | `source_code` | String | Код канала |
 | `visits` | Float64 | Атрибутированные визиты |
 | `conversions` | Float64 | Атрибутированные конверсии |
 | `revenue` | Float64 | Атрибутированная выручка (в валюте цели) |
+| `assisted_conversions` | Float64 | Число конверсий, где источник участвовал в цепочке, но не был last-touch.  Заполнено только на `attribution_type = 'last_touch'`, на остальных — 0. |
+| `assisted_revenue` | Float64 | То же для выручки. |
+
+Поверх таблицы создано представление **`v_attribution_results`** — те же
+колонки плюс `source_name` (человекочитаемое русское имя канала через
+JOIN к `dict_*` словарям).  DataLens-датасет опирается на view, а не
+на таблицу.
+
+### `source_transitions`
+Матрица переходов «предыдущий канал → следующий канал» по цепочкам
+(строится в `05_attribution_models.sql` из `visits_combined`).
+Используется чартом-тепловой-картой в DataLens как замена Sankey.
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `goal_id` | UInt32 | Цель |
+| `start_date` | Date | Дата конечного визита цепочки |
+| `prev_source_code` / `next_source_code` | String | Коды каналов пары |
+| `transitions` | Float64 | Число пар (все цепочки) |
+| `converting_chains` | Float64 | Сумма Conversions по цепочкам с этой парой |
+
+### Словари имён (`dict_*`)
+Пять справочников `id → name_ru`: `dict_search_engine_roots`,
+`dict_adv_engines`, `dict_social_networks`, `dict_recommendation_systems`,
+`dict_messengers`.  Заполняются `handler.py` из CSV в папке `dicts/`.
+Детали формата — `dicts/README.md`.
 
 ---
 
 ## Кодировка источников трафика (SourceCode)
 
-Воспроизводит логику `analyse_channels_chain.py` из [yandex_metrika_connector_cases](https://github.com/zhdanchik/yandex_metrika_connector_cases).
 Основана на официальных типах `TraficSourceID` Яндекс Метрики:
 
 | TraficSourceID | Код | Описание |
@@ -131,7 +156,7 @@ attribution_results  (ReplacingMergeTree, PARTITION BY goal_id)
 | −1 | `"-1"` | Внутренние переходы |
 | 0 | `"0"` | Прямые заходы |
 | 1 | `"1"` | Переходы по ссылкам на сайтах |
-| 2 | `"2_{SearchEngineID}"` | Из поисковых систем (2_621=Яндекс, 2_1=Google) |
+| 2 | `"2_{SearchEngineRootID}"` | Из поисковых систем (RootID — родительская группировка, а не sub-engine) |
 | 3 | `"3_{AdvEngineID}"` | Переходы по рекламе (3_1=Яндекс Директ, 3_2=Google Ads) |
 | 3 + баннер | `"3_1_{ClickTargetType}"` | Яндекс Директ с типом баннера |
 | 4 | `"4"` | С сохранённых страниц |
@@ -142,6 +167,9 @@ attribution_results  (ReplacingMergeTree, PARTITION BY goal_id)
 | 9 | `"9_{RecommendationSystemID}"` | Из рекомендательных систем |
 | 10 | `"10_{MessengerID}"` | Из мессенджеров |
 | 11 | `"11"` | По QR-коду |
+
+Для префиксных семейств (2_*, 3_*, 8_*, 9_*, 10_*) человекочитаемое
+имя отдаёт `v_attribution_results.source_name` через JOIN к `dict_*`.
 
 ---
 
@@ -164,13 +192,14 @@ attribution_results  (ReplacingMergeTree, PARTITION BY goal_id)
 
 ## Модели атрибуции (`05_attribution_models.sql`)
 
-Все четыре модели читают `visits_combined` напрямую.
+Все пять моделей читают `visits_combined` напрямую.
 Один `INSERT` на модель вычисляет все три метрики за один проход.
 
 | Модель | `attribution_type` | Логика |
 |--------|-------------------|--------|
 | **First Touch** | `first_touch` | 100% кредита `history.SourceCode[1]` (первое касание) |
 | **Last Touch** | `last_touch` | 100% кредита `history.SourceCode[-1]` (последнее касание) |
+| **Last Significant** | `last_significant` | 100% кредита последнему «значимому» касанию — пропускает Direct / Internal / Local / Unknown / External (`TraficSourceID ∈ {0, -1, 4, 5, 6}`).  Фолбэк на Last Touch, если вся цепочка незначимая |
 | **Linear** | `linear` | Кредит поровну: `chain_val / N` на каждое касание |
 | **Time Decay** | `time_decay` | Вес `2^(−d / half_life)`, нормализован внутри цепочки; `d` — дней до конца цепочки |
 
@@ -178,6 +207,12 @@ attribution_results  (ReplacingMergeTree, PARTITION BY goal_id)
 - **visits** — 1 на каждую цепочку (все цепочки)
 - **conversions** — `Conversions` последнего визита (только конвертирующие цепочки, остальные вносят 0)
 - **revenue** — `GoalRevenueCur` последнего визита (аналогично)
+- **assisted_conversions / assisted_revenue** — модельно-независимые колонки
+  на строках Last Touch: число конверсий, где источник появился в цепочке,
+  но не был последним касанием (дубликаты в одной цепочке считаются один раз).
+- **source_transitions** — отдельная таблица с матрицей переходов
+  prev→next (используется для тепловой карты «матрица переходов»
+  в дашборде — облегчённая замена Sankey).
 
 `start_date` = `toDate(history.UTCStartTime[-1])` — дата конечного визита цепочки.
 

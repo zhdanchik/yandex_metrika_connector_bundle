@@ -6,25 +6,26 @@ sql/03_attribution_models.sql.  It is used exclusively by the unit
 test suite so that correctness can be verified without a live
 ClickHouse instance.
 
-SourceCode convention matches analyse_channels_chain.py.
-Официальные типы источников Яндекс Метрики (TraficSourceID):
+SourceCode convention (TraficSourceID-based, official types):
   -1  INTERNAL  Внутренние переходы           → "-1"
    0  DIRECT    Прямые заходы                 → "0"
    1  LINK      Переходы по ссылкам на сайтах → "1"
-   2  SEARCH    Из поисковых систем           → "2_{SearchEngineID}"
-                  e.g. "2_621"=Яндекс, "2_1"=Google, "2_3"=Mail.ru
+   2  SEARCH    Из поисковых систем           → "2_{SearchEngineRootID}"
+                  root ID is the parent grouping (e.g. "Яндекс")
+                  rather than the sub-engine "Яндекс.Картинки" etc.
    3  ADV       Переходы по рекламе           → "3_{AdvEngineID}"
                   + баннер                    → "3_{AdvEngineID}_{ClickTargetType}"
-                  e.g. "3_1"=Яндекс Директ, "3_2"=Google Ads
    4  LOCAL     С сохранённых страниц         → "4"
    5  UNKNOW    Не определён                  → "5"
    6  EXTERNAL  По внешним ссылкам            → "6"
    7  MAIL      С почтовых рассылок           → "7"
    8  SOCIAL    Из социальных сетей           → "8_{SocialSourceNetworkID}"
-                  e.g. "8_1"=VK, "8_2"=Facebook, "8_3"=OK
    9  RECOMMEND Из рекомендательных систем    → "9_{RecommendationSystemID}"
   10  MESSENGER Из мессенджеров               → "10_{MessengerID}"
   11  QR        По QR коду                    → "11"
+
+Non-significant TraficSourceIDs (for last_significant model):
+  (-1, 0, 4, 5, 6) — internal, direct, local, unknown, external.
 
 Each public function accepts a list of *chains*, where a chain is
 a list of touchpoint dicts produced by ``build_chains()``:
@@ -51,7 +52,7 @@ from typing import Dict, List
 
 def derive_source_code(
     trafic_source_id: int,
-    search_engine_id: int = 0,
+    search_engine_root_id: int = 0,
     adv_engine_id: int = 0,
     social_source_network_id: int = 0,
     recommendation_system_id: int = 0,
@@ -62,12 +63,13 @@ def derive_source_code(
     """
     Derive a SourceCode string from Yandex Metrika TraficSourceID fields.
 
-    Mirrors the multiIf() expression in 02_build_chains.sql which was
-    originally written in analyse_channels_chain.py.
+    Mirrors the multiIf() expression in sql/02_prepare_visits.sql.
+    Search-engine identity uses RootID (parent grouping) rather than the
+    sub-engine SearchEngineID.
     """
     code = str(trafic_source_id)
     if trafic_source_id == 2:
-        return f"{code}_{search_engine_id}"
+        return f"{code}_{search_engine_root_id}"
     if trafic_source_id == 3 and adv_engine_id == 1 and click_banner_id != 0:
         return f"{code}_{adv_engine_id}_{click_target_type}"
     if trafic_source_id == 3:
@@ -79,6 +81,22 @@ def derive_source_code(
     if trafic_source_id == 10:
         return f"{code}_{messenger_id}"
     return code
+
+
+# ---------------------------------------------------------------------------
+# Non-significant sources for the last_significant model
+# ---------------------------------------------------------------------------
+
+NON_SIGNIFICANT_ROOTS = frozenset({-1, 0, 4, 5, 6})
+
+
+def _source_root_id(source_code: str) -> int | None:
+    """Extract the numeric TraficSourceID root from a SourceCode string."""
+    head = source_code.split("_", 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +116,7 @@ def build_chains(
         utc_start_time    : datetime
         goals_id          : list[int]   – goal IDs reached in this visit
         trafic_source_id  : int         (default 0)
-        search_engine_id  : int         (default 0)
+        search_engine_root_id : int     (default 0)
         adv_engine_id     : int         (default 0)
         social_source_network_id : int  (default 0)
         recommendation_system_id : int  (default 0)
@@ -142,7 +160,7 @@ def build_chains(
             days_before = delta_seconds / 86400.0
             source_code = derive_source_code(
                 trafic_source_id=tp.get("trafic_source_id", 0),
-                search_engine_id=tp.get("search_engine_id", 0),
+                search_engine_root_id=tp.get("search_engine_root_id", 0),
                 adv_engine_id=tp.get("adv_engine_id", 0),
                 social_source_network_id=tp.get("social_source_network_id", 0),
                 recommendation_system_id=tp.get("recommendation_system_id", 0),
@@ -197,6 +215,27 @@ def compute_last_touch(chains: List[List[dict]]) -> Dict[str, float]:
     return result
 
 
+def compute_last_significant(chains: List[List[dict]]) -> Dict[str, float]:
+    """
+    Last-significant: 100% credit to the LAST touchpoint whose root
+    TraficSourceID is NOT in NON_SIGNIFICANT_ROOTS.  Falls back to
+    plain last-touch when every touchpoint in the chain is
+    non-significant.
+    """
+    result: Dict[str, float] = {}
+    for chain in chains:
+        if not chain:
+            continue
+        ordered = sorted(chain, key=lambda t: t["position"])
+        significant = [
+            tp for tp in ordered
+            if _source_root_id(tp["source_code"]) not in NON_SIGNIFICANT_ROOTS
+        ]
+        tp = significant[-1] if significant else ordered[-1]
+        _accumulate(result, tp["source_code"], 1.0)
+    return result
+
+
 def compute_linear(chains: List[List[dict]]) -> Dict[str, float]:
     """Linear: equal credit (1/N) to every touchpoint in the chain."""
     result: Dict[str, float] = {}
@@ -236,4 +275,54 @@ def compute_time_decay(
             continue
         for tp, w in zip(chain, raw_weights):
             _accumulate(result, tp["source_code"], w / total)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Assisted conversions  (model-independent)
+# ---------------------------------------------------------------------------
+
+def compute_assisted_conversions(chains: List[List[dict]]) -> Dict[str, float]:
+    """
+    Assisted conversions per source.
+
+    For each chain (one conversion), a source is credited with 1 if it
+    appears ANYWHERE except the last position.  Multiple non-last
+    appearances in the same chain count once.  Chains of length 1 have
+    no assists.
+
+    Mirrors the SQL assisted-CTE in 05_attribution_models.sql.
+    """
+    result: Dict[str, float] = {}
+    for chain in chains:
+        if len(chain) < 2:
+            continue
+        ordered = sorted(chain, key=lambda t: t["position"])
+        non_last_sources = {tp["source_code"] for tp in ordered[:-1]}
+        for source in non_last_sources:
+            _accumulate(result, source, 1.0)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Transition matrix  (consecutive-pair aggregation)
+# ---------------------------------------------------------------------------
+
+def compute_transitions(chains: List[List[dict]]) -> Dict[tuple, float]:
+    """
+    Count prev→next transitions across chains.
+
+    Returns {(prev_source, next_source): count} — one increment per pair
+    occurrence per chain.  Chains of length 1 contribute nothing.
+
+    Mirrors the transition-matrix INSERT in 05_attribution_models.sql.
+    """
+    result: Dict[tuple, float] = {}
+    for chain in chains:
+        if len(chain) < 2:
+            continue
+        ordered = sorted(chain, key=lambda t: t["position"])
+        for prev, nxt in zip(ordered[:-1], ordered[1:]):
+            key = (prev["source_code"], nxt["source_code"])
+            result[key] = result.get(key, 0.0) + 1.0
     return result

@@ -21,7 +21,7 @@
 --   -1 INTERNAL  Внутренние переходы           → "-1"
 --    0 DIRECT    Прямые заходы                 → "0"
 --    1 LINK      Переходы по ссылкам на сайтах → "1"
---    2 SEARCH    Из поисковых систем           → "2_{SearchEngineID}"
+--    2 SEARCH    Из поисковых систем           → "2_{SearchEngineRootID}"
 --    3 ADV       Переходы по рекламе           → "3_{AdvEngineID}"
 --                + баннер                      → "3_{AdvEngineID}_{ClickTargetType}"
 --    4 LOCAL     С сохранённых страниц         → "4"
@@ -32,6 +32,11 @@
 --    9 RECOMMEND Из рекомендательных систем    → "9_{RecommendationSystemID}"
 --   10 MESSENGER Из мессенджеров               → "10_{MessengerID}"
 --   11 QR        По QR коду                    → "11"
+--
+-- Search-engine identity uses RootID (parent grouping) rather than the
+-- sub-engine SearchEngineID.  RootID collapses e.g. "Яндекс.Поиск",
+-- "Яндекс.Картинки", "Яндекс.Карты" into a single "Яндекс" bucket,
+-- which matches how marketers think about search-engine sources.
 -- ============================================================
 
 INSERT INTO visits_prepared
@@ -54,9 +59,9 @@ flat AS (
             VisitVersion
         ))                                                                               AS trafic_source_id,
         argMax(
-            `TrafficSource.SearchEngineID`[indexOf(`TrafficSource.Model`, toUInt8(1))],
+            `TrafficSource.SearchEngineRootID`[indexOf(`TrafficSource.Model`, toUInt8(1))],
             VisitVersion
-        )                                                                                AS search_engine_id,
+        )                                                                                AS search_engine_root_id,
         argMax(
             `TrafficSource.AdvEngineID`[indexOf(`TrafficSource.Model`, toUInt8(1))],
             VisitVersion
@@ -112,7 +117,7 @@ SELECT
     -- metr_combine_insert_final_query (analyse_channels_chain.py)
     toString(trafic_source_id) || multiIf(
         trafic_source_id = 2,
-            '_' || toString(search_engine_id),
+            '_' || toString(search_engine_root_id),
         trafic_source_id = 3 AND adv_engine_id = 1 AND click_banner_id != 0,
             '_' || toString(adv_engine_id) || '_' || toString(click_target_type),
         trafic_source_id = 3,

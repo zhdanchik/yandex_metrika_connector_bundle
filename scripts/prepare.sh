@@ -73,6 +73,22 @@ for f in 01_schema.sql 02_prepare_visits.sql 03_combine_visits.sql 05_attributio
 done
 ok "  SQL synced"
 
+# 4b. Sync source-name dictionaries (CSV lookup tables).  Shipped inside
+# the function ZIP; handler.py loads them into dict_* tables on each run.
+log "syncing dicts/ → functions/transform/dicts/"
+mkdir -p "$REPO_ROOT/functions/transform/dicts"
+for f in search_engine_roots.csv adv_engines.csv social_networks.csv \
+         recommendation_systems.csv messengers.csv; do
+  if [ -f "$REPO_ROOT/dicts/$f" ]; then
+    cp "$REPO_ROOT/dicts/$f" "$REPO_ROOT/functions/transform/dicts/$f"
+  else
+    warn "  dicts/$f missing — source names will fall back to '<Root>: код <id>'"
+    # Write a header-only stub so handler.py does not fail on missing file.
+    printf 'id,name_ru\n' > "$REPO_ROOT/functions/transform/dicts/$f"
+  fi
+done
+ok "  dicts synced"
+
 # 5. Refuse unsafe CLICKHOUSE_TLS
 if [ "${CLICKHOUSE_TLS:-1}" = "0" ]; then
   warn "CLICKHOUSE_TLS=0 set in env — TLS WILL BE DISABLED in the function"
