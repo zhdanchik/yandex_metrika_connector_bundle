@@ -38,25 +38,8 @@ output "trigger_id" {
   value       = module.scheduler.trigger_id
 }
 
-# ──────────────────────────────────────────────────────────────
-# DataLens: точка входа для импорта готового дашборда.
-# Deep-link «создать воркбук прямо из JSON» отсутствует — endpoint
-# /workbooks/import требует существующий workbookId. Зато в диалоге
-# «Создать воркбук» (в UI коллекции) есть поле «Импорт из файла»,
-# которое делает ровно то, что нам нужно, одним шагом.
-# Connection к ClickHouse также создаётся руками (TF-провайдер пока
-# не умеет yandex_datalens_connection для CH — см. datalens/NOTES.md).
-# Полный рецепт — datalens/BUILD_SPEC.md §§1-2, troubleshooting — README.
-# ──────────────────────────────────────────────────────────────
-
-output "datalens_import_url" {
-  description = <<-EOT
-    Ссылка на список коллекций DataLens. Далее:
-      1. Создай/выбери коллекцию.
-      2. Жми «Создать → Воркбук». В диалоге укажи «Импорт из файла»
-         и выбери datalens/dashboard.json → «Создать».
-      3. На шаге привязки connection укажи clickhouse_cluster_id.
-    Пошагово — в datalens/BUILD_SPEC.md.
-  EOT
-  value       = "https://datalens.yandex.cloud/collections"
-}
+# DataLens вход — https://datalens.yandex.cloud/collections.
+# Раньше тут был terraform output с этой ссылкой, но она константа
+# (никаких folder_id / workbook_id в deep-link), поэтому вывод убран —
+# пользователь открывает URL напрямую. Подробный flow импорта — в
+# README §«Импорт дашборда» и datalens/BUILD_SPEC.md.

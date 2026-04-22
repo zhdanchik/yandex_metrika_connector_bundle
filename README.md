@@ -613,10 +613,7 @@ endpoint `/workbooks/import` требует уже существующий `wor
 (создание поддерживает импорт из файла в том же диалоге).
 
 1. Открой список коллекций DataLens:
-   ```bash
-   terraform -chdir=terraform output -raw datalens_import_url
-   # → https://datalens.yandex.cloud/collections
-   ```
+   <https://datalens.yandex.cloud/collections>.
 2. Создай (или выбери) коллекцию — например, `Атрибуция Метрики`.
 3. Внутри коллекции жми **Создать → Воркбук**. В диалоге
    `Создать воркбук`:
