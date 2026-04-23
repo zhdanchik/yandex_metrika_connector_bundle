@@ -361,3 +361,36 @@ LEFT JOIN dict_adv_engines            AS n_ad ON next_root_id = 3  AND toUInt8(n
 LEFT JOIN dict_social_networks        AS n_sn ON next_root_id = 8  AND toUInt8(next_sub_id)  = n_sn.id
 LEFT JOIN dict_recommendation_systems AS n_rs ON next_root_id = 9  AND toUInt8(next_sub_id)  = n_rs.id
 LEFT JOIN dict_messengers             AS n_ms ON next_root_id = 10 AND toUInt8(next_sub_id)  = n_ms.id;
+
+
+-- ============================================================
+-- VIEW: long-format assisted vs direct conversions
+-- ============================================================
+-- Reshapes the "last_touch" rows of v_attribution_results so that
+-- "прямые" (direct) and "ассоциированные" (assisted) conversions
+-- become SEPARATE ROWS rather than two columns.  Lets DataLens draw
+-- a grouped bar chart without fighting Measure Names / stacking
+-- defaults: you just use (source_name, metric_type) as two X axes
+-- and a single measure — bars sit side by side naturally.
+CREATE OR REPLACE VIEW v_assisted_long AS
+SELECT
+    goal_id,
+    start_date,
+    source_code,
+    source_name,
+    'Прямые'              AS metric_type,
+    conversions           AS value,
+    revenue               AS value_money
+FROM v_attribution_results
+WHERE attribution_type = 'last_touch'
+UNION ALL
+SELECT
+    goal_id,
+    start_date,
+    source_code,
+    source_name,
+    'Ассоциированные'     AS metric_type,
+    assisted_conversions  AS value,
+    assisted_revenue      AS value_money
+FROM v_attribution_results
+WHERE attribution_type = 'last_touch';
