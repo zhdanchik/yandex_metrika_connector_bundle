@@ -223,15 +223,20 @@ CREATE TABLE IF NOT EXISTS dict_messengers
 
 
 -- ============================================================
--- VIEW: human-readable attribution_results
+-- VIEWS: human-readable attribution_results & source_transitions
 -- ============================================================
--- Resolves source_code into source_name (Russian) via the dict_*
--- tables.  Names for TraficSourceID roots are hardcoded (only 12
--- values, stable forever) — sub-IDs are resolved via LEFT JOIN.
+-- Resolve source_code → source_name (Russian) via the dict_* tables.
+-- Names for TraficSourceID roots are hardcoded (12 stable values) —
+-- sub-IDs are resolved via LEFT JOIN.
 --
--- Fallback when a sub-ID is missing from the dict: "Родитель (код)"
--- so data is never silently lost.  Install the CSVs into dicts/ and
--- the fallbacks disappear.
+-- Fallback when a sub-ID is missing from the dict: "Родитель: код N"
+-- so data is never silently lost.  Fill the CSVs in dicts/ and the
+-- fallbacks disappear.
+--
+-- v_attribution_results   — attribution_results + source_name
+-- v_source_transitions    — source_transitions   + prev_source_name
+--                                                 + next_source_name
+
 CREATE OR REPLACE VIEW v_attribution_results AS
 WITH
     parts AS (
@@ -283,3 +288,76 @@ LEFT JOIN dict_adv_engines            AS ad ON root_id = 3  AND toUInt8(sub_id) 
 LEFT JOIN dict_social_networks        AS sn ON root_id = 8  AND toUInt8(sub_id)  = sn.id
 LEFT JOIN dict_recommendation_systems AS rs ON root_id = 9  AND toUInt8(sub_id)  = rs.id
 LEFT JOIN dict_messengers             AS ms ON root_id = 10 AND toUInt8(sub_id)  = ms.id;
+
+
+-- Same resolution applied to both ends of every transition.  Ten
+-- LEFT JOINs (5 dicts × 2 sides) against tiny lookup tables — trivial
+-- for the typical transition-matrix row count.
+CREATE OR REPLACE VIEW v_source_transitions AS
+WITH
+    t AS (
+        SELECT
+            goal_id,
+            start_date,
+            prev_source_code,
+            next_source_code,
+            transitions,
+            converting_chains,
+            calculated_at,
+            toInt16OrNull(splitByChar('_', prev_source_code)[1])  AS prev_root_id,
+            toInt32OrZero(splitByChar('_', prev_source_code)[2])  AS prev_sub_id,
+            toInt16OrNull(splitByChar('_', next_source_code)[1])  AS next_root_id,
+            toInt32OrZero(splitByChar('_', next_source_code)[2])  AS next_sub_id
+        FROM source_transitions
+    )
+SELECT
+    goal_id,
+    start_date,
+    prev_source_code,
+    next_source_code,
+    transitions,
+    converting_chains,
+    calculated_at,
+    multiIf(
+        prev_root_id = -1, 'Внутренние переходы',
+        prev_root_id =  0, 'Прямые заходы',
+        prev_root_id =  1, 'Переходы по ссылкам на сайтах',
+        prev_root_id =  2, concat('Поиск: ', coalesce(nullIf(p_se.name_ru, ''), concat('код ', toString(prev_sub_id)))),
+        prev_root_id =  3, concat('Реклама: ', coalesce(nullIf(p_ad.name_ru, ''), concat('код ', toString(prev_sub_id)))),
+        prev_root_id =  4, 'С сохранённых страниц',
+        prev_root_id =  5, 'Источник не определён',
+        prev_root_id =  6, 'По внешним ссылкам',
+        prev_root_id =  7, 'Почтовые рассылки',
+        prev_root_id =  8, concat('Соцсети: ', coalesce(nullIf(p_sn.name_ru, ''), concat('код ', toString(prev_sub_id)))),
+        prev_root_id =  9, concat('Рекомендации: ', coalesce(nullIf(p_rs.name_ru, ''), concat('код ', toString(prev_sub_id)))),
+        prev_root_id = 10, concat('Мессенджеры: ', coalesce(nullIf(p_ms.name_ru, ''), concat('код ', toString(prev_sub_id)))),
+        prev_root_id = 11, 'QR-код',
+        prev_source_code
+    ) AS prev_source_name,
+    multiIf(
+        next_root_id = -1, 'Внутренние переходы',
+        next_root_id =  0, 'Прямые заходы',
+        next_root_id =  1, 'Переходы по ссылкам на сайтах',
+        next_root_id =  2, concat('Поиск: ', coalesce(nullIf(n_se.name_ru, ''), concat('код ', toString(next_sub_id)))),
+        next_root_id =  3, concat('Реклама: ', coalesce(nullIf(n_ad.name_ru, ''), concat('код ', toString(next_sub_id)))),
+        next_root_id =  4, 'С сохранённых страниц',
+        next_root_id =  5, 'Источник не определён',
+        next_root_id =  6, 'По внешним ссылкам',
+        next_root_id =  7, 'Почтовые рассылки',
+        next_root_id =  8, concat('Соцсети: ', coalesce(nullIf(n_sn.name_ru, ''), concat('код ', toString(next_sub_id)))),
+        next_root_id =  9, concat('Рекомендации: ', coalesce(nullIf(n_rs.name_ru, ''), concat('код ', toString(next_sub_id)))),
+        next_root_id = 10, concat('Мессенджеры: ', coalesce(nullIf(n_ms.name_ru, ''), concat('код ', toString(next_sub_id)))),
+        next_root_id = 11, 'QR-код',
+        next_source_code
+    ) AS next_source_name
+FROM t
+LEFT JOIN dict_search_engine_roots    AS p_se ON prev_root_id = 2  AND toUInt16(prev_sub_id) = p_se.id
+LEFT JOIN dict_adv_engines            AS p_ad ON prev_root_id = 3  AND toUInt8(prev_sub_id)  = p_ad.id
+LEFT JOIN dict_social_networks        AS p_sn ON prev_root_id = 8  AND toUInt8(prev_sub_id)  = p_sn.id
+LEFT JOIN dict_recommendation_systems AS p_rs ON prev_root_id = 9  AND toUInt8(prev_sub_id)  = p_rs.id
+LEFT JOIN dict_messengers             AS p_ms ON prev_root_id = 10 AND toUInt8(prev_sub_id)  = p_ms.id
+LEFT JOIN dict_search_engine_roots    AS n_se ON next_root_id = 2  AND toUInt16(next_sub_id) = n_se.id
+LEFT JOIN dict_adv_engines            AS n_ad ON next_root_id = 3  AND toUInt8(next_sub_id)  = n_ad.id
+LEFT JOIN dict_social_networks        AS n_sn ON next_root_id = 8  AND toUInt8(next_sub_id)  = n_sn.id
+LEFT JOIN dict_recommendation_systems AS n_rs ON next_root_id = 9  AND toUInt8(next_sub_id)  = n_rs.id
+LEFT JOIN dict_messengers             AS n_ms ON next_root_id = 10 AND toUInt8(next_sub_id)  = n_ms.id;
