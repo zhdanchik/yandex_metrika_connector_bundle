@@ -140,13 +140,15 @@ DataLens-датасет `ds_attribution` теперь смотрит на view, 
   но требует ~50 строк layout-кода руками (require внешних модулей
   в редакторе нет) — не стоит этого в v1.
 
-**Замена**: вместо Sankey — тепловая карта переходов (`ch_transitions_heatmap`
-в BUILD_SPEC §7), датасет `ds_transitions` над таблицей
-`source_transitions`, заполняемой в `05_attribution_models.sql`.
-Показывает те же данные prev→next, но в виде матрицы, а не потоков;
-отрисовывается штатным heatmap-виджетом без Editor-костылей.  Если
-однажды в Gravity UI Charts завезут нативный sankey — встанет на
-тот же датасет без миграции данных.
+**Замена**: вместо Sankey — pivot-матрица переходов
+(`ch_transitions_matrix` в BUILD_SPEC §7), датасет `ds_transitions`
+над представлением `v_source_transitions`, заполняемым в
+`05_attribution_models.sql`.  Сводная таблица с условным
+форматированием по `Переходы` даёт тот же «цветной квадратик» эффект,
+что и heatmap — нативного heatmap-типа в DataLens нет, но pivot с
+background-цветом его отлично заменяет.  Если однажды в Gravity UI
+Charts завезут нативный Sankey — встанет на тот же датасет без
+миграции данных.
 
 ---
 
@@ -157,7 +159,7 @@ DataLens-датасет `ds_attribution` теперь смотрит на view, 
 Данные для сanky уже лежат в `source_transitions` (prev→next,
 count) — это тот же контракт `{nodes, links}`, который ожидает
 d3-sankey.  Как только в Gravity UI Charts завезут `type: 'sankey'`,
-тепловая карта `ch_transitions_heatmap` меняется на Sankey без
+pivot-матрица `ch_transitions_matrix` меняется на Sankey без
 переработки пайплайна — только правка Editor-шаблона.
 
 ### WoW-дельта в KPI
