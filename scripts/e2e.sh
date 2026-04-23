@@ -3,7 +3,7 @@
 #   1. cleanup — delete every project resource (manual or terraform-made)
 #   2. deploy  — terraform apply: creates NAT + DT endpoints + transfer,
 #                synchronously activates SNAPSHOT_ONLY transfer to completion
-#   3. smoke   — invoke function + verify pipeline tables + 4 models
+#   3. smoke   — invoke function + verify pipeline tables + 5 models
 #
 # Set ASSUME_YES=1 to skip confirmations.
 
