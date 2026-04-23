@@ -236,42 +236,50 @@ CREATE OR REPLACE VIEW v_attribution_results AS
 WITH
     parts AS (
         SELECT
-            *,
-            splitByChar('_', source_code)                         AS p,
+            goal_id,
+            attribution_type,
+            start_date,
+            source_code,
+            visits,
+            conversions,
+            revenue,
+            assisted_conversions,
+            assisted_revenue,
+            calculated_at,
             toInt16OrNull(splitByChar('_', source_code)[1])       AS root_id,
             toInt32OrZero(splitByChar('_', source_code)[2])       AS sub_id
         FROM attribution_results
     )
 SELECT
-    p.goal_id,
-    p.attribution_type,
-    p.start_date,
-    p.source_code,
-    p.visits,
-    p.conversions,
-    p.revenue,
-    p.assisted_conversions,
-    p.assisted_revenue,
-    p.calculated_at,
+    goal_id,
+    attribution_type,
+    start_date,
+    source_code,
+    visits,
+    conversions,
+    revenue,
+    assisted_conversions,
+    assisted_revenue,
+    calculated_at,
     multiIf(
-        p.root_id = -1, 'Внутренние переходы',
-        p.root_id =  0, 'Прямые заходы',
-        p.root_id =  1, 'Переходы по ссылкам на сайтах',
-        p.root_id =  2, concat('Поиск: ', coalesce(nullIf(se.name_ru, ''), concat('код ', toString(p.sub_id)))),
-        p.root_id =  3, concat('Реклама: ', coalesce(nullIf(ad.name_ru, ''), concat('код ', toString(p.sub_id)))),
-        p.root_id =  4, 'С сохранённых страниц',
-        p.root_id =  5, 'Источник не определён',
-        p.root_id =  6, 'По внешним ссылкам',
-        p.root_id =  7, 'Почтовые рассылки',
-        p.root_id =  8, concat('Соцсети: ', coalesce(nullIf(sn.name_ru, ''), concat('код ', toString(p.sub_id)))),
-        p.root_id =  9, concat('Рекомендации: ', coalesce(nullIf(rs.name_ru, ''), concat('код ', toString(p.sub_id)))),
-        p.root_id = 10, concat('Мессенджеры: ', coalesce(nullIf(ms.name_ru, ''), concat('код ', toString(p.sub_id)))),
-        p.root_id = 11, 'QR-код',
-        p.source_code
+        root_id = -1, 'Внутренние переходы',
+        root_id =  0, 'Прямые заходы',
+        root_id =  1, 'Переходы по ссылкам на сайтах',
+        root_id =  2, concat('Поиск: ', coalesce(nullIf(se.name_ru, ''), concat('код ', toString(sub_id)))),
+        root_id =  3, concat('Реклама: ', coalesce(nullIf(ad.name_ru, ''), concat('код ', toString(sub_id)))),
+        root_id =  4, 'С сохранённых страниц',
+        root_id =  5, 'Источник не определён',
+        root_id =  6, 'По внешним ссылкам',
+        root_id =  7, 'Почтовые рассылки',
+        root_id =  8, concat('Соцсети: ', coalesce(nullIf(sn.name_ru, ''), concat('код ', toString(sub_id)))),
+        root_id =  9, concat('Рекомендации: ', coalesce(nullIf(rs.name_ru, ''), concat('код ', toString(sub_id)))),
+        root_id = 10, concat('Мессенджеры: ', coalesce(nullIf(ms.name_ru, ''), concat('код ', toString(sub_id)))),
+        root_id = 11, 'QR-код',
+        source_code
     ) AS source_name
-FROM parts AS p
-LEFT JOIN dict_search_engine_roots    AS se ON p.root_id = 2  AND toUInt16(p.sub_id) = se.id
-LEFT JOIN dict_adv_engines            AS ad ON p.root_id = 3  AND toUInt8(p.sub_id)  = ad.id
-LEFT JOIN dict_social_networks        AS sn ON p.root_id = 8  AND toUInt8(p.sub_id)  = sn.id
-LEFT JOIN dict_recommendation_systems AS rs ON p.root_id = 9  AND toUInt8(p.sub_id)  = rs.id
-LEFT JOIN dict_messengers             AS ms ON p.root_id = 10 AND toUInt8(p.sub_id)  = ms.id;
+FROM parts
+LEFT JOIN dict_search_engine_roots    AS se ON root_id = 2  AND toUInt16(sub_id) = se.id
+LEFT JOIN dict_adv_engines            AS ad ON root_id = 3  AND toUInt8(sub_id)  = ad.id
+LEFT JOIN dict_social_networks        AS sn ON root_id = 8  AND toUInt8(sub_id)  = sn.id
+LEFT JOIN dict_recommendation_systems AS rs ON root_id = 9  AND toUInt8(sub_id)  = rs.id
+LEFT JOIN dict_messengers             AS ms ON root_id = 10 AND toUInt8(sub_id)  = ms.id;
