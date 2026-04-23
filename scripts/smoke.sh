@@ -94,7 +94,7 @@ for table in visits_prepared visits_combined attribution_results; do
   [ "$cnt" -gt 0 ] || warn "    table $table is empty"
 done
 
-hdr "Attribution sanity check (4 models for goal=$GOAL_ID)"
+hdr "Attribution sanity check (5 models for goal=$GOAL_ID)"
 MODELS="$(ch "SELECT attribution_type,
                      count()                      AS rows,
                      round(sum(visits), 2)        AS visits,
@@ -106,9 +106,9 @@ MODELS="$(ch "SELECT attribution_type,
               FORMAT PrettyCompactNoEscapes")"
 echo "$MODELS"
 n_models="$(ch "SELECT countDistinct(attribution_type) FROM attribution_results" | tr -d '\n')"
-[ "$n_models" -eq 4 ] || warn "expected 4 attribution_type values, got $n_models"
+[ "$n_models" -eq 5 ] || warn "expected 5 attribution_type values, got $n_models"
 
-# Cross-model invariant: sum(visits) should be equal across all 4 models
+# Cross-model invariant: sum(visits) should be equal across all 5 models
 # (each chain contributes 1 visit total, split across its touches in
 # linear/time_decay but still summing to 1 per chain).
 DISTINCT_VISIT_TOTALS="$(ch "

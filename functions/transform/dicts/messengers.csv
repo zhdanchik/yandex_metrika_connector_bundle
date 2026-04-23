@@ -1,3 +1,5 @@
 id,name_ru
-# TrafficSource.MessengerID → русское название
-# Заполняется пользователем; см. dicts/README.md для источника.
+1,Другой мессенджер: определено по меткам
+2,Telegram
+3,WhatsApp
+4,Viber
