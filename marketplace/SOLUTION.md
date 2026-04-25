@@ -64,30 +64,78 @@ Linear / Time Decay) на сырых визитах Яндекс Метрики,
 
 ## Что подготовить до начала
 
+> ### ⚠ Сильная рекомендация: создай отдельный каталог под это решение
+>
+> Все скрипты (особенно `cleanup.sh`) работают по префиксу имён внутри
+> заданного каталога и выдают широкие IAM-роли. **Не разворачивай это
+> в каталог с production-ресурсами.** Создай новый пустой каталог:
+>
+> ```bash
+> yc resource-manager folder create --name metrika-attribution
+> yc resource-manager folder list   # запомни id нового каталога — это будет folder_id
+> ```
+>
+> Если что-то пойдёт не так — снести можно одной командой:
+> `yc resource-manager folder delete --id <folder_id>`.
+
 **В Yandex Cloud:**
 
-1. Аккаунт с биллингом и каталогом.
-2. VPC и подсеть в зоне `ru-central1-a` (Terraform их не создаёт —
-   использует существующие).
-3. IAM-роли на каталоге у того, кто запускает `terraform apply`:
+1. Аккаунт с биллингом, привязанным к этому каталогу.
+2. VPC-сеть и подсеть **в зоне `ru-central1-a`** (Terraform их не создаёт —
+   использует существующие). Если их нет — создай:
+   ```bash
+   yc vpc network create --name metrika-net --folder-id <folder_id>
+   yc vpc subnet  create --name metrika-subnet --folder-id <folder_id> \
+       --network-name metrika-net --zone ru-central1-a --range 10.0.0.0/24
+   ```
+   Получить ID существующих:
+   ```bash
+   yc vpc network list --folder-id <folder_id>
+   yc vpc subnet  list --folder-id <folder_id>
+   ```
+   > Если у тебя есть подсеть только в зоне `-b`/`-c`/`-d` — поменяй `zone`
+   > в `terraform/modules/clickhouse/main.tf` (поле `host.zone`)
+   > и убедись, что подсеть из той же зоны.
+
+3. **IAM-роли на каталоге** для того, кто запускает `terraform apply`:
    `editor`, `iam.serviceAccounts.admin`, `storage.admin`, `mdb.admin`,
    `datatransfer.admin`, `serverless.functions.admin`, `lockbox.admin`.
 
+   > **Если ты не администратор каталога** — попроси админа выдать роли.
+   > Пример команды для админа (повторить для каждой роли):
+   > ```bash
+   > yc resource-manager folder add-access-binding <folder_id> \
+   >     --role editor --subject userAccount:<твой_user_id>
+   > ```
+   > `editor` — широкая роль, поэтому особенно важно использовать
+   > отдельный каталог (см. выше).
+
 **В Яндекс Метрике:**
 
-4. Счётчик с настроенной целью конверсии.
-5. OAuth-токен с правом `metrika:write` — получить на
-   <https://oauth.yandex.ru/>. Именно `write`: `metrika:read` недостаточно,
-   Data Transfer падает с 403 на активации. Токен нужен дважды:
-   - один раз в YC Console — при создании Metrika source endpoint (Шаг 1),
-   - один раз локально — при запуске `scripts/pick_goal.py` (Шаг 3).
-
-   **В Terraform и Lockbox токен не сохраняется.** Он живёт только
-   на стороне YC Data Transfer и на твоей машине.
+4. **Счётчик** с настроенной **целью конверсии**. Цель настраивается в
+   Метрика → Настройка → Цели. Без цели атрибуцию считать не от чего.
+5. **OAuth-токен Метрики с правом `metrika:write`**:
+   - Зарегистрируй OAuth-приложение: <https://oauth.yandex.ru/client/new>
+     → в разделе «Доступы» отметь **Яндекс Метрика → metrika:write**.
+   - Получи токен: открой
+     `https://oauth.yandex.ru/authorize?response_type=token&client_id=<твой_client_id>`
+     в браузере — Яндекс выдаст токен в URL после редиректа.
+   - Именно `write`: `metrika:read` недостаточно, Data Transfer падает с
+     403 на активации.
+   - Токен нужен **два раза**:
+     - в YC Console при создании Metrika source endpoint (Шаг 1),
+     - локально при запуске `scripts/pick_goal.py` (Шаг 3).
+   - **В Terraform и Lockbox токен не сохраняется** — он живёт только
+     на стороне YC Data Transfer и на твоей машине.
 
 **Локальные инструменты:**
 
-6. `terraform ≥ 1.5`, `yc` CLI, `clickhouse-client`, `jq`, `python3`, `curl`.
+6. На своей машине поставь:
+   - [`terraform`](https://developer.hashicorp.com/terraform/install) ≥ 1.5
+   - [`yc` CLI](https://yandex.cloud/ru/docs/cli/quickstart) (после установки — `yc init` для аутентификации)
+   - [`clickhouse-client`](https://clickhouse.com/docs/install) ≥ 21.1
+   - `jq`, `python3`, `curl` (обычно уже есть; на macOS — `brew install jq`,
+     на Ubuntu — `apt install jq python3 curl`)
 
 ---
 
@@ -119,11 +167,19 @@ cp terraform.tfvars.example terraform.tfvars
 
 Открой `terraform.tfvars` и заполни:
 
-- `folder_id`, `network_id`, `subnet_id` — твои YC-ресурсы
-- `counter_id` — номер счётчика Метрики
-- `metrika_source_endpoint_id` — id из Шага 1 (`dte...`)
-- `function_bucket_name` — **глобально уникальное** имя Object Storage бакета
-- `clickhouse_password` — пароль для пользователя `analyst`
+- `folder_id`, `network_id`, `subnet_id` — id из «Что подготовить», п. 2
+- `counter_id` — номер счётчика Метрики (виден в URL интерфейса Метрики:
+  `metrika.yandex.ru/list/counter/<ID>`)
+- `metrika_source_endpoint_id` — id из Шага 1 (вида `dte...`)
+- `function_bucket_name` — **новое** имя бакета Object Storage. Скрипты
+  его создадут — **не вписывай существующий бакет**, он будет удалён
+  при `cleanup.sh`. Имя должно быть **глобально уникальным среди всех
+  пользователей YC** (как в S3): только строчная латиница, цифры, дефисы;
+  3–63 символа. Пример: `metrika-attribution-fn-acme-2026`.
+- `clickhouse_password` — пароль для пользователя `analyst`. Минимум
+  16 символов, буквы разного регистра + цифры + спецсимвол. ClickHouse
+  слабый пароль не отвергнет — это твоя ответственность.
+- `goal_id` — **не заполняй вручную**, его впишет Шаг 3.
 
 ### Шаг 3. Выбери цель конверсии
 
@@ -146,12 +202,17 @@ METRIKA_OAUTH_TOKEN=xxx python3 ../scripts/pick_goal.py \
 
 ```bash
 cd ..
-ASSUME_YES=1 ./scripts/e2e.sh
+./scripts/e2e.sh
 ```
 
 Скрипт прогонит `terraform apply` и сделает smoke-тест. Apply синхронно
 ждёт завершения первого snapshot'а Data Transfer (10–30 минут на крупных
 счётчиках) — это нормально.
+
+> **Совет первому запуску:** запусти **без** `ASSUME_YES=1` — скрипт
+> покажет план и попросит подтвердить. `ASSUME_YES=1 ./scripts/e2e.sh`
+> пропустит все подтверждения; используй только в CI/повторных запусках,
+> когда уже знаешь, что именно произойдёт.
 
 Если нужен контроль по шагам:
 
@@ -192,6 +253,12 @@ ASSUME_YES=1 ./scripts/e2e.sh
 - **Пароли не попадают в cmdline**: XML-конфиг `chmod 600` для DDL,
   HTTP-заголовок для smoke-теста, sensitive TF-переменная для Data Transfer.
 - **`terraform.tfvars`, `*.tfstate*`, `CA.pem`** — в `.gitignore`.
+- ⚠ **ClickHouse-кластер по умолчанию имеет публичный IP**
+  (`assign_public_ip = true`) — это нужно для применения DDL с твоей
+  машины. Доступ всё равно идёт по TLS с паролем, но на production
+  установи `false` в `terraform/modules/clickhouse/main.tf` и применяй
+  DDL изнутри VPC (Jump-host). Опционально настрой
+  `security_group_ids` с whitelist по IP.
 
 Полный разбор — [README §«Безопасность»](../README.md#безопасность).
 
@@ -212,17 +279,73 @@ ASSUME_YES=1 ./scripts/e2e.sh
 
 ## Удаление
 
+> ⚠ **Прочитай этот раздел до запуска `cleanup.sh`.** Скрипт
+> необратим, без dry-run и удаляет реальные ресурсы.
+
+### Что делает `cleanup.sh`
+
+- Ищет в указанном `folder_id` все ресурсы с именем, начинающимся на
+  префикс **`metrika-attribution-*`**, и удаляет их: триггеры, функции,
+  Data Transfer'ы, endpoint'ы, Lockbox-секреты, route-table'ы, VPC-gateway'и,
+  сервисные аккаунты.
+- Удаляет **ClickHouse-кластер** с подходящим префиксом, **автоматически
+  снимая `deletion_protection`** даже если ты его выставлял.
+- **Эмптит и удаляет Object Storage бакет** с именем из `function_bucket_name`
+  (поиск по точному имени, не по префиксу). Все объекты в нём пропадают.
+- Сохраняет Metrika source endpoint из Шага 1 (его создавал человек в UI).
+- Удаляет локальный `terraform/.terraform`, `terraform.tfstate*`, `tfplan`.
+
+Подтверждение спрашивается **один раз на всё** — не по каждому ресурсу.
+
+### Безопасный путь — через удаление каталога
+
+Если ты следовал рекомендации и развернул в **отдельный каталог**, проще
+и безопаснее снести каталог целиком (никакие prefix-match'и не имеют значения):
+
 ```bash
-./scripts/cleanup.sh
-# либо: terraform -chdir=terraform destroy
+yc resource-manager folder delete --id <folder_id>
 ```
 
-`cleanup.sh` **сохраняет Metrika source endpoint** (его создавал человек
-в UI в Шаге 1). Чтобы снести и его:
+### Если каталог общий — `cleanup.sh`
+
+```bash
+./scripts/cleanup.sh
+```
+
+**До запуска проверь, что в каталоге нет твоих ресурсов с именем
+`metrika-attribution-*`** — они тоже будут удалены:
+
+```bash
+yc resource-manager folder list-resources --id <folder_id> | grep metrika-attribution
+```
+
+Дополнительно проверь, что `function_bucket_name` в `terraform.tfvars`
+указывает именно на бакет, созданный этим решением (не на
+ранее существовавший твой бакет с похожим именем):
+
+```bash
+grep function_bucket_name terraform/terraform.tfvars
+```
+
+### Чтобы удалить и Metrika source endpoint
+
+По умолчанию endpoint из Шага 1 сохраняется — его создавал человек в UI.
+Если хочешь снести и его:
 
 ```bash
 KEEP_SOURCE_ID="" ./scripts/cleanup.sh
 ```
+
+### Альтернатива — `terraform destroy`
+
+```bash
+terraform -chdir=terraform destroy
+```
+
+Удалит только то, что Terraform создавал и видит в `tfstate`. **Не**
+удаляет содержимое бакета (если объекты добавлялись вне Terraform) и
+**не** снимает `deletion_protection` с ClickHouse автоматически — это
+безопаснее, но может потребовать ручных шагов для полной очистки.
 
 ---
 
